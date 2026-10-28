@@ -10,18 +10,25 @@ Nightfall puts the Mac to **sleep**. It does not power it off.
 
 ## Install
 
-Requires **macOS 13 or later**. The published beta is for **Intel Macs**. Apple Silicon users can use a manual GitHub Actions build or build from source below; Apple Silicon hardware has not yet been tested.
+Requires **macOS 13 or later**. The current download is **1.1.1 beta 1**, with apps for Intel and Apple Silicon. The Apple Silicon app is cross-built and signature-checked; Apple Silicon hardware has not yet been tested. See the [changes](CHANGELOG.md) for fixes in this beta.
 
 The ready-made app archive is stored with **Git LFS**. This is an early beta; testing is ongoing.
 
-1. Open [Nightfall-1.1.0-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/3e8e31ed4308fede710e91dd00aae2ed36768139/Downloads/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip), then choose **Download raw file**.
+Choose the app for your Mac:
+
+| Processor | App archive | SHA-256 |
+| --- | --- | --- |
+| Intel | [Nightfall-1.1.1-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/7147ecf3baed7b24401fc96a43685668610ee099/Downloads/v1.1.1-beta.1/Nightfall-1.1.1-x86_64.zip) | [Checksum](https://github.com/markdjwilliams/nightfall-mac/blob/7147ecf3baed7b24401fc96a43685668610ee099/Downloads/v1.1.1-beta.1/Nightfall-1.1.1-x86_64.zip.sha256) |
+| Apple Silicon (M-series) | [Nightfall-1.1.1-arm64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/7147ecf3baed7b24401fc96a43685668610ee099/Downloads/v1.1.1-beta.1/Nightfall-1.1.1-arm64.zip) | [Checksum](https://github.com/markdjwilliams/nightfall-mac/blob/7147ecf3baed7b24401fc96a43685668610ee099/Downloads/v1.1.1-beta.1/Nightfall-1.1.1-arm64.zip.sha256) |
+
+1. Open your app archive link above, then choose **Download raw file**.
 2. Unzip it, then open the extracted **Nightfall.app**.
 3. Choose **Install for all users…** and authorize the standard macOS administrator prompt.
 4. Nightfall reopens from Applications. Use the moon in the menu bar to open **Schedule & settings…**.
 
 To update an existing installation, open the newly downloaded app and choose **Install this version…**. The installer keeps the shared schedule and skipped occurrences, then restarts Nightfall for signed-in users.
 
-The beta is ad hoc signed, without Apple Developer ID signing or notarization. macOS may block a downloaded copy. A [SHA-256 checksum](https://github.com/markdjwilliams/nightfall-mac/blob/3e8e31ed4308fede710e91dd00aae2ed36768139/Downloads/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip.sha256) is stored beside the archive.
+The beta is ad hoc signed, without Apple Developer ID signing or notarization. macOS may block a downloaded copy. A SHA-256 checksum is linked beside each archive above.
 
 GitHub's **Source code** downloads are for building Nightfall yourself. Use the app download above for the ready-made app. Git clones need [Git LFS](https://git-lfs.com/) installed to retrieve the archive; without it, the archive path contains a small pointer file. Building from source does not need Git LFS.
 
