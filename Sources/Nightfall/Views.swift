@@ -71,10 +71,11 @@ struct NightfallView: View {
                     }
                 }.padding(.horizontal, 4)
                 HStack(spacing: 10) {
-                    Button("Skip tonight") { model.skipTonight() }.disabled(!model.canSkipToday)
+                    Button("Skip next sleep") { model.skipNextSleep() }.disabled(!model.canSkipNextSleep)
                     Button("Preview warning") { model.preview() }
                     Spacer()
-                    Button("Save changes") { model.save() }.buttonStyle(.borderedProminent).tint(accent).disabled(!model.isDirty)
+                    Button(model.saving ? "Saving…" : "Save changes") { model.save() }
+                        .buttonStyle(.borderedProminent).tint(accent).disabled(!model.isDirty || model.saving)
                 }.controlSize(.large)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
@@ -158,7 +159,7 @@ struct WarningView: View {
                         .font(.system(size: 14, weight: .semibold)).foregroundStyle(ink)
                         .frame(maxWidth: .infinity).padding(.vertical, 13)
                         .background(Color(red: 0.94, green: 0.85, blue: 0.64), in: RoundedRectangle(cornerRadius: 11))
-                }.buttonStyle(.plain).keyboardShortcut(.cancelAction)
+                }.buttonStyle(.plain).keyboardShortcut(.cancelAction).disabled(model.cancellingWarning)
                     .accessibilityHint(isPreview ? "Closes this harmless preview" : "Cancels only this occurrence; tomorrow’s schedule stays on")
                 Text("Tomorrow’s schedule stays the same.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4)).padding(.top, 13)
                 Spacer(minLength: 10)

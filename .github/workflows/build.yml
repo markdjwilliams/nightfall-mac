@@ -1,6 +1,6 @@
 name: Build Nightfall (manual)
 
-# Keep private-repository usage deliberate: pushes, PRs, tags and schedules do not run this.
+# Keep usage deliberate, including private forks: pushes, PRs, tags and schedules do not run this.
 on:
   workflow_dispatch:
     inputs:
@@ -32,9 +32,11 @@ jobs:
           lfs: false
           persist-credentials: false
 
-      - name: Test scheduling and isolated uninstall
+      - name: Test scheduling and isolated installation maintenance
         run: |
           ./Tests/run-tests.sh
+          ./Tests/run-model-tests.sh
+          python3 Tests/InstallerTests.py
           python3 Tests/UninstallTests.py
 
       - name: Build and verify Intel app archive
@@ -56,7 +58,7 @@ jobs:
         run: |
           {
             printf '## Nightfall build\n\nSource commit: `%s`\n\n' "$GITHUB_SHA"
-            printf 'Intel scheduling, dry-run service and isolated uninstall tests passed.\n\n'
+            printf 'Intel scheduling, app model, dry-run service and isolated installer/uninstaller tests passed.\n\n'
             printf 'App archives and their extracted signatures were verified. When selected, Apple Silicon is cross-built; it is not run on Apple Silicon hardware.\n\n'
             printf 'Download **Nightfall-apps** below, unzip it, then unzip the app archive for your processor. These ad hoc signed builds are not notarized. Downloads expire after seven days.\n\n'
             printf '### SHA-256 checksums\n\n```text\n'

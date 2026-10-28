@@ -7,7 +7,9 @@ func value(after flag: String) -> String? {
     return arguments[index + 1]
 }
 
-if arguments.contains("--daemon") {
+if arguments.contains("--version") {
+    print(NightfallVersion.current)
+} else if arguments.contains("--daemon") {
     do {
         let dryRun = arguments.contains("--dry-run")
         let directory = dryRun ? (value(after: "--state-dir") ?? NSTemporaryDirectory() + "Nightfall-test") : NightfallPaths.stateDirectory

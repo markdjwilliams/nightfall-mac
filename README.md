@@ -2,7 +2,7 @@
 
 A native menu bar app that gives everyone on this Mac a chance to finish up before its daily sleep.
 
-The default is **sleep at 8:30 p.m. every day**, with a **two-minute countdown** starting around 8:28 p.m. An optional gentle chime is **off by default**; there are no spoken announcements. The countdown always gives the active user the full warning period, so a late presentation or user switch may delay sleep. **Skip tonight** cancels that occurrence for the entire Mac. Tomorrow’s schedule stays on. The time, warning length, and chime are configurable. Existing speech preferences migrate to sound off.
+The default is **sleep at 8:30 p.m. every day**, with a **two-minute countdown** starting around 8:28 p.m. An optional gentle chime is **off by default**; there are no spoken announcements. The countdown always gives the active user the full warning period, so a late presentation or user switch may delay sleep. In the warning, **Skip tonight** cancels that occurrence for the entire Mac. The settings and menu command **Skip next sleep** targets the next occurrence, including after today's scheduled time or across midnight. Later days stay scheduled. The time, warning length, and chime are configurable. Existing speech preferences migrate to sound off.
 
 Nightfall puts the Mac to **sleep**. It does not power it off.
 
@@ -18,6 +18,8 @@ The ready-made app archive is stored with **Git LFS**. This is an early beta; te
 2. Unzip it, then open the extracted **Nightfall.app**.
 3. Choose **Install for all users…** and authorize the standard macOS administrator prompt.
 4. Nightfall reopens from Applications. Use the moon in the menu bar to open **Schedule & settings…**.
+
+To update an existing installation, open the newly downloaded app and choose **Install this version…**. The installer keeps the shared schedule and skipped occurrences, then restarts Nightfall for signed-in users.
 
 The beta is ad hoc signed, without Apple Developer ID signing or notarization. macOS may block a downloaded copy. A [SHA-256 checksum](https://github.com/markdjwilliams/nightfall-mac/blob/3e8e31ed4308fede710e91dd00aae2ed36768139/Downloads/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip.sha256) is stored beside the archive.
 
@@ -55,7 +57,9 @@ To run the automated checks:
 
 ```sh
 ./Tests/run-tests.sh
+./Tests/run-model-tests.sh
 python3 Tests/ServiceTests.py
+python3 Tests/InstallerTests.py
 python3 Tests/UninstallTests.py
 ./Scripts/check.sh
 ```
@@ -68,7 +72,7 @@ To build a downloadable app archive and checksum, run `./Scripts/package.sh`. It
 
 Open [Build Nightfall (manual)](https://github.com/markdjwilliams/nightfall-mac/actions/workflows/build.yml), choose **Run workflow**, and use the `main` branch. Leave **Also cross-build the Apple Silicon app** checked to get both processor versions. After a successful run, download **Nightfall-apps** from its **Artifacts** section. Unzip that download, then unzip the app archive for your Mac: `x86_64` for Intel or `arm64` for Apple Silicon. The app archives preserve executable permissions and signatures inside the outer Actions download.
 
-The workflow runs scheduling tests, isolated uninstall tests and the Intel service tests with power actions disabled. By default, it builds and verifies both app archives on one standard Intel Mac runner. Apple Silicon is cross-built and signature-checked; this does not establish behavior on Apple Silicon hardware. Builds are ad hoc signed and are not notarized.
+The workflow runs scheduling and app-model tests, isolated installer/uninstaller tests and the Intel service tests with power actions disabled. By default, it builds and verifies both app archives on one standard Intel Mac runner. Apple Silicon is cross-built and signature-checked; this does not establish behavior on Apple Silicon hardware. Builds are ad hoc signed and are not notarized.
 
 Builds are **manual only**. Pushes, pull requests, tags and schedules do not trigger builds. Each requested run uses one Mac runner with a **15-minute cutoff**; a new request cancels an older active run. Downloads expire after **seven days**. The checkout skips Git LFS downloads, and the workflow uses no caches, extra credentials, repository writes or automatic release publishing. Published app archives remain in Git LFS; Actions downloads are temporary build outputs.
 
@@ -76,7 +80,7 @@ Standard GitHub-hosted Actions runners are free for public repositories. Git LFS
 
 ## Testing
 
-Core tests cover scheduling, cancellation, presentation, multiple users, stale agents, restarts, wake gaps, daylight-saving changes, and clock changes. The service test uses the real socket and persistence with **power actions disabled**. It never sleeps the Mac.
+Core tests cover scheduling, cancellation, presentation, multiple users, stale agents, restarts, wake gaps, daylight-saving changes, and clock changes. The service test uses the real socket and persistence with **power actions disabled**. It never sleeps the Mac. Installer and uninstaller tests use temporary files and simulated system services, including stop failures, upgrade rollback, and safe restart ordering; they do not alter the installed app.
 
 For manual checks, use **Preview warning** first. Then verify a real countdown with the Mac in use, another signed-in user, user switching, full-screen apps, screen locking, and an app restart. Save work before allowing a real countdown to complete. These interactive conditions and actual hardware sleep need testing on the destination Mac; automated simulations cannot establish their behavior.
 

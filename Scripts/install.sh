@@ -5,10 +5,34 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 077
 
 fail() { printf 'Nightfall installation: %s\n' "$*" >&2; exit 1; }
+valid_uid() { [[ "$1" =~ ^[0-9]{3,10}$ ]] && (( 10#$1 >= 500 && 10#$1 <= 4294967294 )); }
+
+# Missing jobs and users who signed out are safe. Other inspection failures must
+# not be mistaken for a stopped service while replacing its executable.
+# launchctl uses 113 for a missing service and 112 for a missing GUI domain.
+stop_service() {
+    local target="$1" result
+    if /bin/launchctl print "$target" >/dev/null 2>&1; then
+        if /bin/launchctl bootout "$target" >/dev/null 2>&1; then :
+        else
+            result=$?
+            [[ "$result" -eq 113 || ( "$target" == gui/* && "$result" -eq 112 ) ]] || return "$result"
+        fi
+        if /bin/launchctl print "$target" >/dev/null 2>&1; then return 1
+        else result=$?; fi
+    else result=$?; fi
+    [[ "$result" -eq 113 || ( "$target" == gui/* && "$result" -eq 112 ) ]]
+}
+
 [[ "$EUID" -eq 0 ]] || fail 'Administrator authorization is required.'
-[[ "$#" -eq 1 ]] || fail 'Usage: install.sh /absolute/path/Nightfall.app'
+[[ "$#" -eq 1 || ( "$#" -eq 3 && "$2" == '--caller-uid' ) ]] || fail 'Usage: install.sh /absolute/path/Nightfall.app [--caller-uid UID]'
 [[ "$1" == /* ]] || fail 'The source app path must be absolute.'
 source_app="$1"
+caller_uid=''
+if [[ "$#" -eq 3 ]]; then
+    valid_uid "$3" || fail 'Invalid caller user ID.'
+    caller_uid="$((10#$3))"
+elif valid_uid "${SUDO_UID:-}"; then caller_uid="$((10#$SUDO_UID))"; fi
 [[ -d "$source_app" && ! -L "$source_app" ]] || fail 'The source app is missing or is a symbolic link.'
 
 app='/Applications/Nightfall.app'
@@ -20,7 +44,9 @@ daemon_label='com.nightfall.mac.daemon'
 agent_label='com.nightfall.mac.agent'
 stage=''
 changes_started=0
+files_started=0
 daemon_was_loaded=0
+caller_was_loaded=0
 old_app=0
 old_helper=0
 old_daemon_plist=0
@@ -32,7 +58,7 @@ old_agent_uids=()
 # Privileged code is kept here rather than in /Applications, whose parent is
 # normally group-writable. An administrator could otherwise replace the app
 # without authorization and have launchd execute that replacement as root.
-for directory in /Library/PrivilegedHelperTools /Library/LaunchDaemons /Library/LaunchAgents; do
+for directory in /Library/PrivilegedHelperTools /Library/LaunchDaemons /Library/LaunchAgents '/Library/Application Support'; do
     [[ ! -L "$directory" ]] || fail "Refusing symbolic-link directory: $directory"
     if [[ ! -d "$directory" ]]; then /usr/bin/install -d -o root -g wheel -m 755 "$directory"; fi
     [[ "$(/usr/bin/stat -f %u "$directory")" -eq 0 ]] || fail "Directory is not owned by root: $directory"
@@ -49,14 +75,32 @@ if [[ -e "$state" ]]; then
     [[ -z "$(/usr/bin/find "$state" -type l -print -quit)" ]] || fail 'Existing Nightfall state contains symbolic links.'
 fi
 
+users="$(/usr/bin/dscl . -list /Users UniqueID | /usr/bin/awk '$2 >= 500 {print $2}' | /usr/bin/sort -n -u)" || fail 'Could not list signed-in users.'
+# Network accounts can be absent from the local directory. Include users with
+# running processes, then ask launchd which ones have a graphical login.
+process_users="$(/bin/ps -axo uid= | /usr/bin/awk '$1 >= 500 {print $1}')" || fail 'Could not list user processes.'
+users="$(printf '%s\n%s\n%s\n' "$users" "$process_users" "$caller_uid" | /usr/bin/sort -n -u)"
 while IFS= read -r uid; do
-    [[ "$uid" =~ ^[0-9]+$ ]] || continue
+    valid_uid "$uid" || continue
     if /bin/launchctl print "gui/$uid" >/dev/null 2>&1; then
         gui_uids+=("$uid")
-        if /bin/launchctl print "gui/$uid/$agent_label" >/dev/null 2>&1; then old_agent_uids+=("$uid"); fi
+        if /bin/launchctl print "gui/$uid/$agent_label" >/dev/null 2>&1; then
+            old_agent_uids+=("$uid")
+            if [[ "$uid" == "$caller_uid" ]]; then caller_was_loaded=1; fi
+        else
+            result=$?
+            [[ "$result" -eq 112 || "$result" -eq 113 ]] || fail "Could not inspect Nightfall for user $uid (error $result)."
+        fi
+    else
+        result=$?
+        [[ "$result" -eq 112 ]] || fail "Could not inspect the login session for user $uid (error $result)."
     fi
-done < <(/usr/bin/dscl . -list /Users UniqueID | /usr/bin/awk '$2 >= 500 {print $2}' | /usr/bin/sort -n -u)
-if /bin/launchctl print "system/$daemon_label" >/dev/null 2>&1; then daemon_was_loaded=1; fi
+done <<< "$users"
+if /bin/launchctl print "system/$daemon_label" >/dev/null 2>&1; then daemon_was_loaded=1
+else
+    result=$?
+    [[ "$result" -eq 113 ]] || fail "Could not inspect Nightfall's system service (error $result)."
+fi
 
 cleanup() {
     result=$?
@@ -64,16 +108,33 @@ cleanup() {
     trap - EXIT HUP INT TERM
     if [[ "$result" -ne 0 && "$changes_started" -eq 1 ]]; then
         printf 'Installation did not finish; restoring the previous installation.\n' >&2
-        /bin/launchctl bootout "system/$daemon_label" >/dev/null 2>&1 || true
-        for uid in ${gui_uids[@]+"${gui_uids[@]}"}; do /bin/launchctl bootout "gui/$uid/$agent_label" >/dev/null 2>&1 || true; done
-        if [[ "$new_app_installed" -eq 1 ]]; then /bin/rm -rf "$app"; fi
-        /bin/rm -f "$helper" "$daemon_plist" "$agent_plist"
-        if [[ "$old_app" -eq 1 ]]; then /bin/mv "$stage/previous.app" "$app" || recovered=0; fi
-        if [[ "$old_helper" -eq 1 ]]; then /bin/cp -p "$stage/previous-helper" "$helper" || recovered=0; fi
-        if [[ "$old_daemon_plist" -eq 1 ]]; then /bin/cp -p "$stage/previous-daemon.plist" "$daemon_plist" || recovered=0; fi
-        if [[ "$old_agent_plist" -eq 1 ]]; then /bin/cp -p "$stage/previous-agent.plist" "$agent_plist" || recovered=0; fi
-        if [[ "$daemon_was_loaded" -eq 1 && -f "$daemon_plist" ]]; then /bin/launchctl bootstrap system "$daemon_plist" >/dev/null 2>&1 || true; fi
-        for uid in ${old_agent_uids[@]+"${old_agent_uids[@]}"}; do /bin/launchctl bootstrap "gui/$uid" "$agent_plist" >/dev/null 2>&1 || true; done
+        if [[ "$files_started" -eq 1 ]]; then
+            # Never overwrite code beneath a replacement service that could not
+            # be stopped. Keep the backups for explicit recovery instead.
+            if stop_service "system/$daemon_label"; then
+                for uid in ${gui_uids[@]+"${gui_uids[@]}"}; do
+                    [[ "$uid" == "$caller_uid" ]] && continue
+                    stop_service "gui/$uid/$agent_label" || recovered=0
+                done
+                if [[ "$new_app_installed" -eq 1 ]]; then /bin/rm -rf "$app" || recovered=0; fi
+                /bin/rm -f "$helper" "$daemon_plist" "$agent_plist" || recovered=0
+                if [[ "$old_app" -eq 1 ]]; then
+                    if [[ ! -e "$app" && ! -L "$app" ]]; then /bin/mv "$stage/previous.app" "$app" || recovered=0
+                    else recovered=0; fi
+                fi
+                if [[ "$old_helper" -eq 1 ]]; then /bin/cp -p "$stage/previous-helper" "$helper" || recovered=0; fi
+                if [[ "$old_daemon_plist" -eq 1 ]]; then /bin/cp -p "$stage/previous-daemon.plist" "$daemon_plist" || recovered=0; fi
+                if [[ "$old_agent_plist" -eq 1 ]]; then /bin/cp -p "$stage/previous-agent.plist" "$agent_plist" || recovered=0; fi
+            else recovered=0; fi
+        fi
+        if [[ "$recovered" -eq 1 ]]; then
+            if [[ "$daemon_was_loaded" -eq 1 && -f "$daemon_plist" ]]; then
+                /bin/launchctl print "system/$daemon_label" >/dev/null 2>&1 || /bin/launchctl bootstrap system "$daemon_plist" >/dev/null 2>&1 || recovered=0
+            fi
+            for uid in ${old_agent_uids[@]+"${old_agent_uids[@]}"}; do
+                /bin/launchctl print "gui/$uid/$agent_label" >/dev/null 2>&1 || /bin/launchctl bootstrap "gui/$uid" "$agent_plist" >/dev/null 2>&1 || recovered=0
+            done
+        fi
     fi
     if [[ -n "$stage" && -d "$stage" ]]; then
         if [[ "$recovered" -eq 1 ]]; then /bin/rm -rf "$stage";
@@ -139,8 +200,12 @@ if [[ -e "$helper" ]]; then /bin/cp -p "$helper" "$stage/previous-helper"; old_h
 if [[ -e "$daemon_plist" ]]; then /bin/cp -p "$daemon_plist" "$stage/previous-daemon.plist"; old_daemon_plist=1; fi
 if [[ -e "$agent_plist" ]]; then /bin/cp -p "$agent_plist" "$stage/previous-agent.plist"; old_agent_plist=1; fi
 changes_started=1
-/bin/launchctl bootout "system/$daemon_label" >/dev/null 2>&1 || true
-for uid in ${gui_uids[@]+"${gui_uids[@]}"}; do /bin/launchctl bootout "gui/$uid/$agent_label" >/dev/null 2>&1 || true; done
+stop_service "system/$daemon_label" || fail 'Could not stop the previous system service. Existing installation files were preserved.'
+for uid in ${gui_uids[@]+"${gui_uids[@]}"}; do
+    [[ "$uid" == "$caller_uid" ]] && continue
+    stop_service "gui/$uid/$agent_label" || fail "Could not stop Nightfall for user $uid. Existing installation files were preserved."
+done
+files_started=1
 if [[ -e "$app" ]]; then /bin/mv "$app" "$stage/previous.app"; old_app=1; fi
 /bin/mv "$staged_app" "$app"
 new_app_installed=1
@@ -150,9 +215,17 @@ new_app_installed=1
 /usr/bin/install -d -o root -g wheel -m 700 "$state"
 /bin/launchctl bootstrap system "$daemon_plist"
 for uid in ${gui_uids[@]+"${gui_uids[@]}"}; do
+    if [[ "$uid" == "$caller_uid" && "$caller_was_loaded" -eq 1 ]]; then continue; fi
     if ! /bin/launchctl bootstrap "gui/$uid" "$agent_plist"; then
         printf 'Nightfall: the menu bar agent could not start for user ID %s; check Login Items or sign in again.\n' "$uid" >&2
     fi
 done
 changes_started=0
+# Restarting the caller can terminate the app and its authorization script.
+# Finish all persistent cleanup first, then request restart in one launchd call.
+/bin/rm -rf "$stage"
+stage=''
 printf 'Nightfall is installed for all users. Existing schedule and cancellations were preserved.\n'
+if [[ "$caller_was_loaded" -eq 1 ]]; then
+    /bin/launchctl kickstart -k "gui/$caller_uid/$agent_label" || fail 'Installed, but the current menu bar app could not restart. Sign out and back in to reload it.'
+fi

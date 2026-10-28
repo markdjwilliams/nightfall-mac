@@ -12,7 +12,11 @@ valid_uid() {
 stop_service() {
     local target="$1" result
     if /bin/launchctl print "$target" >/dev/null 2>&1; then
-        /bin/launchctl bootout "$target" >/dev/null 2>&1 || fail "Could not stop $target. Nothing has been deleted."
+        if /bin/launchctl bootout "$target" >/dev/null 2>&1; then :
+        else
+            result=$?
+            [[ "$result" -eq 113 || ( "$target" == gui/* && "$result" -eq 112 ) ]] || fail "Could not stop $target. Nothing has been deleted."
+        fi
         if /bin/launchctl print "$target" >/dev/null 2>&1; then
             fail "Service is still registered: $target. Nothing has been deleted."
         else
@@ -27,7 +31,7 @@ stop_service() {
 
 main() {
     [[ "$EUID" -eq 0 ]] || fail 'Administrator authorization is required.'
-    local caller_uid='' uid result caller_loaded=0 users
+    local caller_uid='' uid result caller_loaded=0 users process_users
     local gui_uids=()
     if [[ "$#" -eq 0 ]]; then
         if valid_uid "${SUDO_UID:-}"; then caller_uid="$((10#$SUDO_UID))"; fi
@@ -38,6 +42,8 @@ main() {
     fi
 
     users="$(/usr/bin/dscl . -list /Users UniqueID | /usr/bin/awk '$2 >= 500 {print $2}' | /usr/bin/sort -n -u)" || fail 'Could not list signed-in users.'
+    process_users="$(/bin/ps -axo uid= | /usr/bin/awk '$1 >= 500 {print $1}')" || fail 'Could not list user processes.'
+    users="$(printf '%s\n%s\n' "$users" "$process_users" | /usr/bin/sort -n -u)"
     while IFS= read -r uid; do
         valid_uid "$uid" || continue
         if /bin/launchctl print "gui/$uid" >/dev/null 2>&1; then

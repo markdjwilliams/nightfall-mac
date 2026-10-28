@@ -23,6 +23,16 @@ final class NightfallDaemon {
     private var lastSaved: EngineState?
     private var storageHealthy = true
 
+    private static func validateOwnedItem(_ fd: Int32, type: mode_t, name: String) throws {
+        var information = stat()
+        guard fstat(fd, &information) == 0 else { throw SocketError.system("Inspect \(name)", errno) }
+        guard information.st_mode & S_IFMT == type,
+              information.st_uid == geteuid(), information.st_mode & 0o022 == 0,
+              type == S_IFDIR || information.st_nlink == 1 else {
+            throw SocketError.system("Unsafe \(name) ownership, permissions, or file type", EPERM)
+        }
+    }
+
     init(directory: String, socketPath: String, dryRun: Bool) throws {
         self.directory = directory
         self.socketPath = socketPath
@@ -30,20 +40,42 @@ final class NightfallDaemon {
         guard dryRun || geteuid() == 0 else { throw SocketError.system("Service requires administrator installation", EPERM) }
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        lockFD = open(directory + "/service.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
-        guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+        // Installation checks are not a substitute for validating privileged
+        // storage on every launch. O_NOFOLLOW and descriptor checks also avoid
+        // following a replaced state/lock file before its contents are trusted.
+        let directoryFD = open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else { throw SocketError.system("Open state directory", errno) }
+        defer { Darwin.close(directoryFD) }
+        try Self.validateOwnedItem(directoryFD, type: S_IFDIR, name: "state directory")
+        let openedLock = openat(directoryFD, "service.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        guard openedLock >= 0 else { throw SocketError.system("Open service lock", errno) }
+        var retainLock = false
+        defer { if !retainLock { Darwin.close(openedLock) } }
+        try Self.validateOwnedItem(openedLock, type: S_IFREG, name: "service lock")
+        guard flock(openedLock, LOCK_EX | LOCK_NB) == 0 else {
             throw SocketError.system("Another service is already running", EBUSY)
         }
-        let stateURL = URL(fileURLWithPath: directory + "/state.json")
         let state: EngineState
-        if FileManager.default.fileExists(atPath: stateURL.path) {
+        let stateFD = openat(directoryFD, "state.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        if stateFD >= 0 {
+            let file = FileHandle(fileDescriptor: stateFD, closeOnDealloc: true)
+            try Self.validateOwnedItem(stateFD, type: S_IFREG, name: "saved state")
             // A damaged state must not silently re-enable an already skipped occurrence.
-            state = try Wire.decoder().decode(EngineState.self, from: Data(contentsOf: stateURL))
+            state = try Wire.decoder().decode(EngineState.self, from: file.readToEnd() ?? Data())
             try state.settings.validate()
-        } else {
+        } else if errno == ENOENT {
             state = EngineState(settings: Settings(), lastOutcome: nil, pending: nil)
+        } else {
+            throw SocketError.system("Open saved state", errno)
         }
-        engine = ScheduleEngine(state: state, now: Date())
+        engine = ScheduleEngine(state: state, now: Date(), uptime: ProcessInfo.processInfo.systemUptime)
+        lockFD = openedLock
+        retainLock = true
+    }
+
+    deinit {
+        timer?.cancel()
+        if lockFD >= 0 { Darwin.close(lockFD) }
     }
 
     private func persist() -> Bool {
@@ -66,7 +98,8 @@ final class NightfallDaemon {
         let now = Date()
         let console = currentConsoleUID()
         let before = engine.state.pending
-        let shouldSleep = engine.tick(now: now, consoleUID: console, presence: console.flatMap { agents[$0] })
+        let shouldSleep = engine.tick(now: now, consoleUID: console, presence: console.flatMap { agents[$0] },
+                                      uptime: ProcessInfo.processInfo.systemUptime)
         // Consume and save the occurrence before making a power request; never retry it.
         guard persist(), shouldSleep else { return }
         let finalConsole = currentConsoleUID()
@@ -161,9 +194,11 @@ final class NightfallDaemon {
                 let client = accept(listener, nil, nil)
                 if client < 0 { if errno == EINTR { continue }; break }
                 guard admission.wait(timeout: .now()) == .success else { Darwin.close(client); continue }
-                LocalSocket.configure(client)
                 DispatchQueue.global(qos: .utility).async { [self] in
                     defer { Darwin.close(client); admission.signal() }
+                    // A disconnected peer can make configuration fail. Do not
+                    // send even an error response until SIGPIPE is suppressed.
+                    do { try LocalSocket.configure(client) } catch { return }
                     var uid: uid_t = 0
                     var gid: gid_t = 0
                     guard getpeereid(client, &uid, &gid) == 0 else { return }

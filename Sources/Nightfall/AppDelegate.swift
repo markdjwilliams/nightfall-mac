@@ -13,6 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var reopenObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A downloaded update must reach its own installer before the running
+        // installed agent redirects it through the per-user instance lock.
+        if !CommandLine.arguments.contains("--agent"), model.installed,
+           Bundle.main.bundlePath != NightfallPaths.installedApp {
+            NSApp.setActivationPolicy(.accessory)
+            offerDownloadedInstallation()
+            return
+        }
         guard claimInstance() else { NSApp.terminate(nil); return }
         reopenObserver = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.nightfall.mac.showSettings"), object: nil, queue: .main) { [weak self] _ in
             if self?.model.isCurrentSessionUsable == true { self?.showSettings() }
@@ -29,6 +37,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if CommandLine.arguments.contains("--preview") { model.preview() }
         if CommandLine.arguments.contains("--install") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.model.install() }
+        }
+    }
+
+    private func offerDownloadedInstallation() {
+        let alert = NSAlert()
+        alert.messageText = "Install Nightfall \(NightfallVersion.current) for all users?"
+        alert.informativeText = "This replaces the existing Nightfall app and restarts its background service. Your shared schedule and skipped occurrences are kept. macOS will ask for an administrator password."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Install this version…")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertSecondButtonReturn else { NSApp.terminate(nil); return }
+        model.install { result in
+            switch result {
+            case .success: break // Successful installation schedules this copy to quit.
+            case .cancelled: NSApp.terminate(nil)
+            case .failure(let message):
+                let failure = NSAlert()
+                failure.alertStyle = .warning
+                failure.messageText = "Nightfall could not be installed"
+                failure.informativeText = message
+                failure.runModal()
+                NSApp.terminate(nil)
+            }
         }
     }
 
@@ -52,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(title)
         menu.addItem(NSMenuItem(title: model.statusText, action: nil, keyEquivalent: ""))
         menu.addItem(.separator())
-        add(menu, "Skip tonight", #selector(skip), enabled: model.canSkipToday)
+        add(menu, "Skip next sleep", #selector(skip), enabled: model.canSkipNextSleep)
         add(menu, "Preview warning…", #selector(preview))
         add(menu, "Schedule & settings…", #selector(showSettings), key: ",")
         menu.addItem(.separator())
@@ -84,12 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
-    @objc private func skip() { model.skipTonight() }
+    @objc private func skip() { model.skipNextSleep() }
     @objc private func preview() { model.preview() }
     @objc private func uninstall() { model.uninstall() }
     @objc private func about() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "Nightfall", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.0",
+            .applicationName: "Nightfall", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? NightfallVersion.current,
             .credits: NSAttributedString(string: "Daily sleep, with a little courtesy.\nBuilt for this Mac.")
         ])
         NSApp.activate(ignoringOtherApps: true)
@@ -103,13 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         alert.addButton(withTitle: "Keep running")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        if model.connected {
-            model.draft.enabled = false
-            model.save()
-            // The agent stays at login so other users can re-enable the global schedule.
-            // Close windows; launchd is responsible for keeping the courtesy agent available.
-            settingsWindow?.close()
-        } else { NSApp.terminate(nil) }
+        model.pauseDailySleep { [weak self] saved in
+            if saved { self?.settingsWindow?.close() }
+            else { self?.showSettings() }
+        }
     }
 
     private func update() {

@@ -6,14 +6,18 @@ public final class ScheduleEngine {
     public private(set) var state: EngineState
     private var calendar: Calendar
     private var lastTick: Date
+    private var lastUptime: TimeInterval?
+    private var warningClockDrift: TimeInterval = 0
     private let presentationGrace: TimeInterval = 10
     private let freshness: TimeInterval = 4
     private let maximumLateness: TimeInterval = 90
 
-    public init(state: EngineState, now: Date, calendar: Calendar = .autoupdatingCurrent) {
+    public init(state: EngineState, now: Date, calendar: Calendar = .autoupdatingCurrent,
+                uptime: TimeInterval? = nil) {
         self.state = state
         self.calendar = calendar
         self.lastTick = now
+        self.lastUptime = uptime
         if let outcome = state.lastOutcome { markHandled(outcome.day) }
         if let pending = state.pending {
             finish(day: pending.day, now: now,
@@ -32,15 +36,29 @@ public final class ScheduleEngine {
     /// Returns true at most once per day, only after continuous, acknowledged
     /// presentation to the active user's fresh and usable agent.
     @discardableResult
-    public func tick(now: Date, consoleUID: UInt32?, presence: AgentPresence?) -> Bool {
+    public func tick(now: Date, consoleUID: UInt32?, presence: AgentPresence?,
+                     uptime: TimeInterval? = nil) -> Bool {
         let gap = now.timeIntervalSince(lastTick)
+        let uptimeGap = uptime.flatMap { current in lastUptime.map { current - $0 } }
         lastTick = now
+        lastUptime = uptime
 
         if let pending = state.pending {
             if gap < 0 {
                 finish(day: pending.day, now: now,
                        message: "Skipped because the clock moved backward during the warning.")
                 return false
+            }
+            // A small wall-clock adjustment can shorten the countdown without
+            // exceeding the pause grace. Compare elapsed time on a monotonic
+            // clock when the owner supplies it, allowing normal sampling jitter.
+            if let uptimeGap {
+                warningClockDrift += gap - uptimeGap
+                if !uptimeGap.isFinite || uptimeGap < 0 || abs(warningClockDrift) > 1 {
+                    finish(day: pending.day, now: now,
+                           message: "Skipped because the clock changed during the warning.")
+                    return false
+                }
             }
             if pending.presented && gap > presentationGrace {
                 finish(day: pending.day, now: now,
@@ -55,6 +73,7 @@ public final class ScheduleEngine {
             return advanceWarning(now: now, consoleUID: consoleUID, presence: presence)
         }
 
+        warningClockDrift = 0
         guard state.settings.enabled else { return false }
         for due in candidateSleepTimes(around: now) {
             let day = dayKey(due)
@@ -94,8 +113,21 @@ public final class ScheduleEngine {
     }
 
     public func skipTonight(now: Date) {
-        let day = state.pending?.day ?? dayKey(now)
-        finish(day: day, now: now, message: "Skipped this scheduled sleep.")
+        if let pending = state.pending {
+            finish(day: pending.day, now: now, message: "Skipped this scheduled sleep.")
+            return
+        }
+        guard state.settings.enabled else { return }
+        skipMissedOccurrence(now: now)
+
+        // Before midnight, the next sleep can belong to tomorrow. A sleep time
+        // that just passed may also still be eligible for its full warning.
+        let due = candidateSleepTimes(around: now).first {
+            !isHandled(dayKey($0)) &&
+            now >= $0.addingTimeInterval(-TimeInterval(state.settings.warningSeconds))
+        } ?? nextRun(after: now)
+        guard let due else { return }
+        finish(day: dayKey(due), now: now, message: "Skipped this scheduled sleep.")
     }
 
     public func cancelWarning(id: String, now: Date) {

@@ -25,6 +25,9 @@ with (root / "operations.jsonl").open("a") as log:
 if name == "dscl":
     print("mark 501\nother 502\nloggedout 503")
     sys.exit(state.get("dscl_failure", 0))
+if name == "ps":
+    print("\n".join(state.get("process_users", ["501", "502"])))
+    sys.exit(state.get("ps_failure", 0))
 if name == "launchctl":
     action, target = args
     if target in state.get("print_errors", {}) and action == "print":
@@ -34,6 +37,10 @@ if name == "launchctl":
             sys.exit(0)
         sys.exit(113 if target.count("/") >= 2 or target.startswith("system/") else 112)
     if action == "bootout":
+        if target in state.get("disappears_during_bootout", []):
+            state["loaded"].remove(target)
+            state_file.write_text(json.dumps(state))
+            sys.exit(113)
         if target in state.get("bootout_errors", {}):
             sys.exit(state["bootout_errors"][target])
         if target not in state.get("stuck", []):
@@ -82,7 +89,8 @@ class UninstallTests(unittest.TestCase):
         guard = '[[ "$EUID" -eq 0 ]]'
         self.assertEqual(source.count(guard), 1)
         source = source.replace(guard, "[[ 1 -eq 1 ]]")
-        for tool, executable in (("launchctl", "/bin/launchctl"), ("dscl", "/usr/bin/dscl"), ("rm", "/bin/rm")):
+        for tool, executable in (("launchctl", "/bin/launchctl"), ("dscl", "/usr/bin/dscl"),
+                                 ("ps", "/bin/ps"), ("rm", "/bin/rm")):
             path = self.root / tool
             path.write_text(MOCK)
             path.chmod(0o755)
@@ -144,6 +152,34 @@ class UninstallTests(unittest.TestCase):
         result, operations = self.run_fixture("--caller-uid", "501")
         self.assertNotEqual(result.returncode, 0)
         self.assert_nothing_removed(operations)
+
+    def test_service_disappearing_during_bootout_is_safe(self):
+        self.state["disappears_during_bootout"] = [OTHER]
+        result, _ = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_user_directory_failure_preserves_files(self):
+        self.state["dscl_failure"] = 1
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_nothing_removed(operations)
+
+    def test_process_listing_failure_preserves_files(self):
+        self.state["ps_failure"] = 1
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_nothing_removed(operations)
+
+    def test_other_network_login_is_stopped_before_removal(self):
+        network_agent = "gui/504/com.nightfall.mac.agent"
+        self.state["loaded"].append(network_agent)
+        self.state["domains"].append("gui/504")
+        self.state["process_users"] = ["501", "502", "504"]
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stopped = operations.index(["launchctl", "bootout", network_agent])
+        removed = next(index for index, operation in enumerate(operations) if operation[0] == "rm")
+        self.assertLess(stopped, removed)
 
     def test_already_absent_services_are_supported(self):
         self.state["loaded"] = []

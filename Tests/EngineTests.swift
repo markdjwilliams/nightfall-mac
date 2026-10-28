@@ -66,6 +66,7 @@ private enum EngineTests {
             ("warnings crossing midnight use the target sleep date", midnightWarning),
             ("warning acknowledgment starts full countdown", acknowledgmentCountdown),
             ("skip today and resume tomorrow", skipTodayOnly),
+            ("skip targets the next eligible scheduled sleep", skipNextSleep),
             ("cancel current warning only", cancelWarning),
             ("switch active users and sessions", switchUsers),
             ("missing unseen unusable and stale agents", missingAgents),
@@ -76,6 +77,7 @@ private enum EngineTests {
             ("persisted warning restarts safely", restartSafety),
             ("settings changes cancel and invalid settings do not mutate", settingsChanges),
             ("clock rollback and persisted day history", clockRollback),
+            ("wall-clock adjustments cannot shorten a visible warning", monotonicCountdown),
             ("daylight saving calendar behavior", daylightSaving),
             ("failure outcome preserves consumption", failureOutcome)
         ]
@@ -198,10 +200,14 @@ private enum EngineTests {
 
         let beforeWarning = engine(date(2026, 10, 28, 12), settings: settings)
         beforeWarning.skipTonight(now: date(2026, 10, 28, 12))
-        try expect(beforeWarning.state.lastOutcome?.day == "2026-10-28" &&
-                   !beforeWarning.state.handledDays.contains("2026-10-29"),
-                   "Before a warning, skip applies to today's intended event")
-        _ = try trigger(beforeWarning, at: target)
+        try expect(beforeWarning.state.lastOutcome?.day == "2026-10-29" &&
+                   beforeWarning.state.handledDays.contains("2026-10-29"),
+                   "Before a cross-midnight warning, skip must target the next intended sleep")
+        try expect(!beforeWarning.tick(now: start, consoleUID: 501, presence: agent(start)) &&
+                   beforeWarning.state.pending == nil,
+                   "A tomorrow sleep skipped tonight must not begin its warning before midnight")
+        try expect(beforeWarning.nextRun(after: start) == date(2026, 10, 30, 0, 1),
+                   "Skipping the next target preserves the following day's schedule")
 
         let missed = engine(start.addingTimeInterval(91), settings: settings)
         try expect(missed.state.handledDays.contains("2026-10-29") && missed.state.pending == nil,
@@ -248,6 +254,43 @@ private enum EngineTests {
         try expect(e.nextRun(after: warningDate(-4)) == tomorrow, "Next run must be tomorrow")
         _ = try trigger(e, at: tomorrow)
         try expect(e.state.pending?.day == "2026-10-29", "Skip must not disable the next date")
+    }
+
+    static func skipNextSleep() throws {
+        let now = date(2026, 10, 28, 21)
+        let afterTonight = engine(warningDate(-5))
+        afterTonight.skipTonight(now: now)
+        try expect(afterTonight.state.handledDays.contains("2026-10-28") &&
+                   afterTonight.state.lastOutcome?.day == "2026-10-29",
+                   "After a missed sleep, skip must consume the next scheduled date")
+        try expect(afterTonight.nextRun(after: now) == date(2026, 10, 30),
+                   "Skip must advance beyond the actual next occurrence")
+        let tomorrowWarning = warningDate(target: date(2026, 10, 29))
+        try expect(!afterTonight.tick(now: tomorrowWarning, consoleUID: 501,
+                                      presence: agent(tomorrowWarning)) && afterTonight.state.pending == nil,
+                   "The next occurrence skipped after tonight's deadline must stay skipped")
+
+        for delay in [0.0, 15.0] {
+            let justDue = date().addingTimeInterval(delay)
+            let late = engine(justDue)
+            late.skipTonight(now: justDue)
+            try expect(late.state.lastOutcome?.day == "2026-10-28" &&
+                       late.nextRun(after: justDue) == date(2026, 10, 29),
+                       "An eligible warning at or just after the sleep time must still be skipped first")
+        }
+
+        let history = EngineState(settings: Settings(warningSeconds: 30),
+                                  handledDays: ["2026-10-28", "2026-10-29"])
+        let rollback = ScheduleEngine(state: history, now: warningDate(-5), calendar: vancouver)
+        rollback.skipTonight(now: warningDate(-5))
+        try expect(rollback.state.lastOutcome?.day == "2026-10-30" &&
+                   rollback.nextRun(after: warningDate(-5)) == date(2026, 10, 31),
+                   "Skip must pass all previously handled dates after a clock rollback")
+
+        let paused = engine(settings: Settings(enabled: false))
+        let before = paused.state
+        paused.skipTonight(now: now)
+        try expect(paused.state == before, "Skipping a paused schedule must not consume a future date")
     }
 
     static func cancelWarning() throws {
@@ -438,6 +481,52 @@ private enum EngineTests {
                    "Rollback across restart must not repeat an earlier handled date")
         try expect(restarted.state.pending == nil && restarted.nextRun(after: backward) == date(2026, 10, 30),
                    "History must remember multiple handled dates after rollback")
+    }
+
+    static func monotonicCountdown() throws {
+        let start = warningDate()
+        func acknowledgedWarning() throws -> (ScheduleEngine, String) {
+            let e = ScheduleEngine(state: EngineState(settings: Settings(warningSeconds: 30)),
+                                   now: start.addingTimeInterval(-1), calendar: vancouver, uptime: 99)
+            try expect(!e.tick(now: start, consoleUID: 501, presence: agent(start), uptime: 100),
+                       "Creating a warning never approves sleep")
+            let id = e.state.pending!.id
+            let visibleAt = start.addingTimeInterval(1)
+            try expect(!e.tick(now: visibleAt, consoleUID: 501,
+                               presence: agent(visibleAt, visible: id), uptime: 101),
+                       "The first visible heartbeat starts the full warning")
+            return (e, id)
+        }
+
+        for jump in [2.0, 5.0, 9.0] {
+            let (e, id) = try acknowledgedWarning()
+            let correctedClock = start.addingTimeInterval(2 + jump)
+            try expect(!e.tick(now: correctedClock, consoleUID: 501,
+                               presence: agent(correctedClock, visible: id), uptime: 102),
+                       "A forward clock correction must never approve an early sleep")
+            try expect(e.state.pending == nil && e.state.lastOutcome?.message.contains("clock changed") == true,
+                       "Even a clock jump within the pause grace must safely consume the warning")
+        }
+
+        let (slewed, slewID) = try acknowledgedWarning()
+        for step in 1...3 {
+            let adjusted = start.addingTimeInterval(1 + Double(step) * 1.4)
+            try expect(!slewed.tick(now: adjusted, consoleUID: 501,
+                                    presence: agent(adjusted, visible: slewID), uptime: 101 + Double(step)),
+                       "Cumulative small clock corrections must never shorten a warning")
+        }
+        try expect(slewed.state.pending == nil,
+                   "Several subsecond adjustments beyond one second total must also skip")
+
+        let (normal, id) = try acknowledgedWarning()
+        for elapsed in [2.5, 5.0, 9.5, 15.0, 21.0, 27.0, 31.0] {
+            let now = start.addingTimeInterval(elapsed)
+            try expect(normal.tick(now: now, consoleUID: 501,
+                                   presence: agent(now, visible: id), uptime: 100 + elapsed) == (elapsed == 31),
+                       "Matching elapsed clocks must allow irregular ticks and the full countdown")
+        }
+        try expect(normal.state.lastOutcome?.message == "Requested scheduled sleep.",
+                   "Normal elapsed timing must remain functional")
     }
 
     static func daylightSaving() throws {
