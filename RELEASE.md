@@ -1,6 +1,6 @@
-# Public release review
+# Public beta and testing review
 
-The repository stays private during the two-week test period beginning October 28, 2026. Review it for public visibility on **November 11, 2026**, provided testing has found no unresolved problems and the licensing and privacy checks below are satisfied. Do not infer successful testing from a lack of messages.
+Mark approved making the repository public on **October 28, 2026**, superseding the earlier plan to keep it private until November 11. Nightfall remains an early beta. The two-week test period began October 28, with a testing follow-up planned for **November 11, 2026**. Do not infer successful testing from public availability or a lack of messages.
 
 ## Test evidence
 
@@ -14,12 +14,12 @@ The repository stays private during the two-week test period beginning October 2
 - MIT was selected by Mark on October 28. Preserve `LICENSE` and `NOTICE.md` in source distributions and compiled app bundles.
 - Review new dependencies, copied code, and assets. The initial source/history scan found no bundled third-party packages or media, detected secrets, or personal machine paths. This is a bounded source audit, not legal clearance or a guarantee of originality.
 - Keep Apple system symbols in permitted interface roles. Review any branding use against Apple's current SF Symbols restrictions; use the original application artwork for app identity. Do not redistribute Apple system assets under MIT.
-- Confirm Mark is comfortable publishing the commit author metadata, which currently includes a personal email address. If not, agree on a GitHub no-reply identity and history cleanup before publication. Do not silently rewrite history.
-- Review the complete Git history again for secrets and unintended personal data before changing visibility.
+- Git history includes its original commit author metadata. Do not silently rewrite history; agree on any identity changes or cleanup with Mark first.
+- Review new source, artifacts and Git history for secrets and unintended personal data before later releases.
 - Developer ID signing and notarization are separate distribution decisions. The current build is ad hoc signed, as the README states.
 
 ## Publication
 
-The November 11 follow-up is **review only**. Report readiness and ask Mark before changing visibility, even if all checks pass. Only publish after his approval and confirmation of the issue-free testing condition and applicable licensing/privacy checks. If information is missing, leave the repository private. Verify the resulting GitHub visibility and report it after any later authorized change.
+The November 11 follow-up is **review only**. Review the public beta's reported bugs and testing evidence, then report readiness and unresolved items. Do not change visibility, publish another release, or claim the beta has completed testing without Mark's authorization and supporting evidence. Keep the current signing and hardware-testing limitations explicit.
 
 References: [MIT license](https://opensource.org/license/mit), [Apple's Xcode and SDK agreement](https://www.apple.com/legal/sla/docs/xcode.pdf), and [SF Symbols guidance](https://developer.apple.com/design/human-interface-guidelines/sf-symbols).

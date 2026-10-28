@@ -12,7 +12,7 @@ Nightfall puts the Mac to **sleep**. It does not power it off.
 
 Requires **macOS 13 or later**. The published beta is for **Intel Macs**. Apple Silicon users can use a manual GitHub Actions build or build from source below; Apple Silicon hardware has not yet been tested.
 
-The ready-made app archive is stored with **Git LFS**. Access requires permission to this private repository.
+The ready-made app archive is stored with **Git LFS**. This is an early beta; testing is ongoing.
 
 1. Open [Nightfall-1.1.0-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/3e8e31ed4308fede710e91dd00aae2ed36768139/Downloads/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip), then choose **Download raw file**.
 2. Unzip it, then open the extracted **Nightfall.app**.
@@ -70,9 +70,9 @@ Open [Build Nightfall (manual)](https://github.com/markdjwilliams/nightfall-mac/
 
 The workflow runs scheduling tests, isolated uninstall tests and the Intel service tests with power actions disabled. By default, it builds and verifies both app archives on one standard Intel Mac runner. Apple Silicon is cross-built and signature-checked; this does not establish behavior on Apple Silicon hardware. Builds are ad hoc signed and are not notarized.
 
-While the repository is private, builds are **manual only**. Pushes, pull requests, tags and schedules do not trigger builds. Each requested run uses one Mac runner with a **15-minute cutoff**; a new request cancels an older active run. Downloads expire after **seven days**. The checkout skips Git LFS downloads, and the workflow uses no caches, extra credentials, repository writes or automatic release publishing. Published app archives remain in Git LFS; Actions downloads are temporary build outputs.
+Builds are **manual only**. Pushes, pull requests, tags and schedules do not trigger builds. Each requested run uses one Mac runner with a **15-minute cutoff**; a new request cancels an older active run. Downloads expire after **seven days**. The checkout skips Git LFS downloads, and the workflow uses no caches, extra credentials, repository writes or automatic release publishing. Published app archives remain in Git LFS; Actions downloads are temporary build outputs.
 
-Your account's included Actions allowance is shared with other repositories. Check [Actions usage](https://github.com/settings/billing) before requesting more builds; the workflow cannot read your personal billing allowance. A hard **$0 Actions budget** prevents paid overage, but does not reserve included minutes. See GitHub's [billing guidance](https://docs.github.com/en/billing/concepts/product-billing/github-actions) and [budget controls](https://docs.github.com/en/billing/how-tos/set-up-budgets). Review these controls before enabling automatic builds after publication.
+Standard GitHub-hosted Actions runners are free for public repositories. Git LFS storage and bandwidth have separate quotas, including for public repositories. If running a private fork, check [Actions usage](https://github.com/settings/billing) before requesting builds: the included allowance is shared across your account, and the workflow cannot read your personal billing allowance. A hard **$0 Actions budget** prevents paid overage, but does not reserve included minutes. See GitHub's [Actions billing guidance](https://docs.github.com/en/billing/concepts/product-billing/github-actions), [Git LFS billing guidance](https://docs.github.com/en/billing/concepts/product-billing/git-lfs), and [budget controls](https://docs.github.com/en/billing/how-tos/set-up-budgets).
 
 ## Testing
 
@@ -111,6 +111,6 @@ This removes Nightfall’s app, services, and saved schedule. It leaves unrelate
 
 ## License and release status
 
-Nightfall is licensed under [MIT](LICENSE). See [NOTICE.md](NOTICE.md) for Apple system-component notices. The repository remains private during the two-week testing period; the public-release review is planned for November 11, 2026. See [RELEASE.md](RELEASE.md) for the release conditions.
+Nightfall is a public beta licensed under [MIT](LICENSE). See [NOTICE.md](NOTICE.md) for Apple system-component notices. Testing began October 28, 2026, with a follow-up review planned for November 11. Public availability does not mean the two-week testing period is complete. See [RELEASE.md](RELEASE.md) for testing and distribution limitations.
 
 Source: https://github.com/markdjwilliams/nightfall-mac
