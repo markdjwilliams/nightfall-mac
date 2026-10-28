@@ -41,6 +41,8 @@ fi
 
 /usr/bin/install -m 755 "$script_dir/install.sh" "$app_dir/Contents/Resources/install.sh"
 /usr/bin/install -m 755 "$script_dir/uninstall.sh" "$app_dir/Contents/Resources/uninstall.sh"
+/usr/bin/install -m 644 "$project_dir/LICENSE" "$app_dir/Contents/Resources/LICENSE"
+/usr/bin/install -m 644 "$project_dir/NOTICE.md" "$app_dir/Contents/Resources/NOTICE.md"
 /usr/bin/codesign --force --sign - --timestamp=none "$app_dir"
 /usr/bin/codesign --verify --deep --strict "$app_dir"
 printf '\nBuilt and verified: %s\n' "$app_dir"

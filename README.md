@@ -73,4 +73,8 @@ sudo /Applications/Nightfall.app/Contents/Resources/uninstall.sh
 
 This removes Nightfall’s app, services, and saved schedule. It leaves unrelated power-management settings alone.
 
-Private source: https://github.com/markdjwilliams/nightfall-mac
+## License and release status
+
+Nightfall is licensed under [MIT](LICENSE). See [NOTICE.md](NOTICE.md) for Apple system-component notices. The repository remains private during the two-week testing period; the public-release review is planned for November 11, 2026. See [RELEASE.md](RELEASE.md) for the release conditions.
+
+Source: https://github.com/markdjwilliams/nightfall-mac
