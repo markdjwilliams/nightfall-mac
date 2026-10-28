@@ -6,6 +6,8 @@ The default is **sleep at 8:30 p.m. every day**, with a **two-minute countdown**
 
 Nightfall puts the Mac to **sleep**. It does not power it off.
 
+![Nightfall settings showing daily sleep at 8:30 p.m., a two-minute warning, and the optional gentle chime switched off.](docs/images/nightfall-settings.png)
+
 ## Install
 
 Requires **macOS 13 or later**. The published beta is for **Intel Macs**. Apple Silicon users can use a manual GitHub Actions build or build from source below; Apple Silicon hardware has not yet been tested.
