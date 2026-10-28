@@ -19,6 +19,8 @@ trap '/bin/rm -rf "$temporary"' EXIT
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :LimitLoadToSessionType' "$temporary/job2.plist")" == 'Aqua' ]]
 if [[ -d "$project_dir/build/Nightfall.app" ]]; then
     /usr/bin/codesign --verify --deep --strict "$project_dir/build/Nightfall.app"
+    /usr/bin/install -m 755 "$project_dir/build/Nightfall.app/Contents/Library/LaunchServices/com.nightfall.mac.daemon" "$temporary/daemon"
+    /usr/bin/codesign --verify --strict --test-requirement='=identifier "com.nightfall.mac.daemon"' "$temporary/daemon"
     /usr/bin/plutil -lint "$project_dir/build/Nightfall.app/Contents/Info.plist"
 fi
 printf 'Packaging checks passed. No services or power actions were started.\n'

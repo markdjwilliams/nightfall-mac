@@ -6,6 +6,8 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 project_dir="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
 build_dir="$project_dir/build"
 app_dir="$build_dir/Nightfall.app"
+helper_dir="$app_dir/Contents/Library/LaunchServices"
+helper_executable="$helper_dir/com.nightfall.mac.daemon"
 architecture="${NIGHTFALL_ARCH:-$(/usr/bin/uname -m)}"
 
 case "$architecture" in arm64|x86_64) ;; *) printf 'Unsupported architecture: %s\n' "$architecture" >&2; exit 1 ;; esac
@@ -15,7 +17,7 @@ export SWIFT_MODULECACHE_PATH="$build_dir/ModuleCache"
 
 # This directory contains generated files only.
 rm -rf "$app_dir"
-mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
+mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources" "$helper_dir"
 cp "$project_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 /usr/bin/plutil -lint "$app_dir/Contents/Info.plist"
 
@@ -24,6 +26,11 @@ sources=("$project_dir"/Sources/NightfallCore/*.swift "$project_dir"/Sources/Nig
     -target "$architecture-apple-macos13.0" \
     -framework AppKit -framework SwiftUI -framework SystemConfiguration -framework IOKit \
     "${sources[@]}" -o "$app_dir/Contents/MacOS/Nightfall"
+
+# Sign the standalone service before the app adds its bundle-specific signature.
+/usr/bin/install -m 755 "$app_dir/Contents/MacOS/Nightfall" "$helper_executable"
+/usr/bin/codesign --force --sign - --identifier com.nightfall.mac.daemon --timestamp=none "$helper_executable"
+/usr/bin/codesign --verify --strict "$helper_executable"
 
 /usr/bin/xcrun swiftc -swift-version 5 -O -framework AppKit \
     "$project_dir/Resources/GenerateIcon.swift" -o "$build_dir/tools/generate-icon"

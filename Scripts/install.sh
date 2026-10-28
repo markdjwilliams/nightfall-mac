@@ -94,10 +94,14 @@ bundle_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$st
 [[ "$bundle_executable" == 'Nightfall' && -f "$staged_app/Contents/MacOS/Nightfall" && -x "$staged_app/Contents/MacOS/Nightfall" ]] || fail 'The Nightfall executable is missing.'
 [[ -z "$(/usr/bin/find "$staged_app" -type l -print -quit)" ]] || fail 'The source bundle contains symbolic links.'
 /usr/bin/codesign --verify --deep --strict "$staged_app" || fail 'The app signature is invalid. Build the app again.'
+staged_helper="$staged_app/Contents/Library/LaunchServices/com.nightfall.mac.daemon"
+[[ -f "$staged_helper" && -x "$staged_helper" ]] || fail 'The Nightfall service executable is missing.'
+/usr/bin/codesign --verify --strict --test-requirement='=identifier "com.nightfall.mac.daemon"' "$staged_helper" || fail 'The service signature is invalid. Build the app again.'
 /usr/sbin/chown -R root:wheel "$staged_app"
 /bin/chmod -R u+rwX,go+rX,go-w "$staged_app"
 /bin/chmod -R a-s "$staged_app"
-/usr/bin/install -o root -g wheel -m 755 "$staged_app/Contents/MacOS/Nightfall" "$stage/new-helper"
+/usr/bin/install -o root -g wheel -m 755 "$staged_helper" "$stage/new-helper"
+/usr/bin/codesign --verify --strict "$stage/new-helper" || fail 'The standalone service signature is invalid.'
 
 cat > "$stage/new-daemon.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
