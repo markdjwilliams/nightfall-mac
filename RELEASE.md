@@ -20,6 +20,6 @@ The repository stays private during the two-week test period beginning October 2
 
 ## Publication
 
-Only change visibility after the issue-free testing condition and applicable licensing/privacy checks are confirmed. If information is missing, ask Mark and leave the repository private. Honor any required action-time approval for exposing a private repository. Verify the resulting GitHub visibility and report it after the change.
+The November 11 follow-up is **review only**. Report readiness and ask Mark before changing visibility, even if all checks pass. Only publish after his approval and confirmation of the issue-free testing condition and applicable licensing/privacy checks. If information is missing, leave the repository private. Verify the resulting GitHub visibility and report it after any later authorized change.
 
 References: [MIT license](https://opensource.org/license/mit), [Apple's Xcode and SDK agreement](https://www.apple.com/legal/sla/docs/xcode.pdf), and [SF Symbols guidance](https://developer.apple.com/design/human-interface-guidelines/sf-symbols).
