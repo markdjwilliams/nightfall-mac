@@ -10,16 +10,16 @@ Nightfall puts the Mac to **sleep**. It does not power it off.
 
 Requires **macOS 13 or later**. The ready-made beta is for **Intel Macs**. Apple Silicon users can build from source below; Apple Silicon hardware has not yet been tested.
 
-The packaged beta is currently saved as a private draft, awaiting release approval. Until its download assets are published, follow **Build and verify** below. After publication:
+The ready-made app archive is stored with **Git LFS**. Access requires permission to this private repository.
 
-1. Download [Nightfall-1.1.0-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/releases/download/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip) from the [beta release](https://github.com/markdjwilliams/nightfall-mac/releases/tag/v1.1.0-beta.1). Access requires permission to this private repository.
+1. Open [Nightfall-1.1.0-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/3e8e31ed4308fede710e91dd00aae2ed36768139/Downloads/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip), then choose **Download raw file**.
 2. Unzip it, then open the extracted **Nightfall.app**.
 3. Choose **Install for all users…** and authorize the standard macOS administrator prompt.
 4. Nightfall reopens from Applications. Use the moon in the menu bar to open **Schedule & settings…**.
 
-The beta is ad hoc signed, without Apple Developer ID signing or notarization. macOS may block a downloaded copy. The release also includes a SHA-256 checksum for the app archive.
+The beta is ad hoc signed, without Apple Developer ID signing or notarization. macOS may block a downloaded copy. A [SHA-256 checksum](https://github.com/markdjwilliams/nightfall-mac/blob/3e8e31ed4308fede710e91dd00aae2ed36768139/Downloads/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip.sha256) is stored beside the archive.
 
-GitHub's **Source code** downloads contain source only; they do not include `Nightfall.app`. To use a source download, follow **Build and verify** below.
+GitHub's **Source code** downloads are for building Nightfall yourself. Use the app download above for the ready-made app. Git clones need [Git LFS](https://git-lfs.com/) installed to retrieve the archive; without it, the archive path contains a small pointer file. Building from source does not need Git LFS.
 
 The installer adds one system service and one agent for every graphical login. It starts agents for users who are already signed in, as well as future logins. The schedule is shared by the whole Mac. An active desktop user may change it; any logged-in account can cancel an occurrence. If macOS disables Nightfall under **System Settings → General → Login Items & Extensions**, re-enable it or use **Repair installation…**.
 
