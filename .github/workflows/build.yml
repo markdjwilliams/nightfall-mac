@@ -1,0 +1,76 @@
+name: Build Nightfall (manual)
+
+# Keep private-repository usage deliberate: pushes, PRs, tags and schedules do not run this.
+on:
+  workflow_dispatch:
+    inputs:
+      apple_silicon:
+        description: Also cross-build the Apple Silicon app
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightfall-manual-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test Intel and package apps
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source without downloading LFS archives
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          lfs: false
+          persist-credentials: false
+
+      - name: Test scheduling and isolated uninstall
+        run: |
+          ./Tests/run-tests.sh
+          python3 Tests/UninstallTests.py
+
+      - name: Build and verify Intel app archive
+        env:
+          NIGHTFALL_ARCH: x86_64
+        run: ./Scripts/package.sh
+
+      - name: Test Intel service with power actions disabled
+        run: python3 Tests/ServiceTests.py
+
+      # Reuse the same runner instead of starting another billed macOS job.
+      - name: Cross-build and verify Apple Silicon app archive
+        if: ${{ inputs.apple_silicon }}
+        env:
+          NIGHTFALL_ARCH: arm64
+        run: ./Scripts/package.sh
+
+      - name: Write build report
+        run: |
+          {
+            printf '## Nightfall build\n\nSource commit: `%s`\n\n' "$GITHUB_SHA"
+            printf 'Intel scheduling, dry-run service and isolated uninstall tests passed.\n\n'
+            printf 'App archives and their extracted signatures were verified. When selected, Apple Silicon is cross-built; it is not run on Apple Silicon hardware.\n\n'
+            printf 'Download **Nightfall-apps** below, unzip it, then unzip the app archive for your processor. These ad hoc signed builds are not notarized. Downloads expire after seven days.\n\n'
+            printf '### SHA-256 checksums\n\n```text\n'
+            cat build/Nightfall-*.zip.sha256
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload app archives and checksums for seven days
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Nightfall-apps
+          path: |
+            build/Nightfall-*.zip
+            build/Nightfall-*.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
