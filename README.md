@@ -10,6 +10,8 @@ Nightfall puts the Mac to **sleep**. It does not power it off.
 
 Requires **macOS 13 or later**. The ready-made beta is for **Intel Macs**. Apple Silicon users can build from source below; Apple Silicon hardware has not yet been tested.
 
+The packaged beta is currently saved as a private draft, awaiting release approval. Until its download assets are published, follow **Build and verify** below. After publication:
+
 1. Download [Nightfall-1.1.0-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/releases/download/v1.1.0-beta.1/Nightfall-1.1.0-x86_64.zip) from the [beta release](https://github.com/markdjwilliams/nightfall-mac/releases/tag/v1.1.0-beta.1). Access requires permission to this private repository.
 2. Unzip it, then open the extracted **Nightfall.app**.
 3. Choose **Install for all users…** and authorize the standard macOS administrator prompt.
@@ -37,6 +39,8 @@ The service requests normal macOS system sleep using `IOPMSleepSystem`. A succes
 ## Build and verify
 
 Requires macOS 13 or later and Apple Command Line Tools. No third-party packages are required. The build targets the current Mac’s processor; set `NIGHTFALL_ARCH=arm64` or `x86_64` to build for a different Mac.
+
+Run these commands from the repository folder after cloning it or unpacking a source download:
 
 ```sh
 ./Scripts/build.sh
