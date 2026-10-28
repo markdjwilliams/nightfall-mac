@@ -9,6 +9,7 @@ on:
         type: boolean
         default: true
 
+# Source checkout needs no repository-write token; releases are published separately.
 permissions:
   contents: read
 
@@ -47,7 +48,7 @@ jobs:
       - name: Test Intel service with power actions disabled
         run: python3 Tests/ServiceTests.py
 
-      # Reuse the same runner instead of starting another billed macOS job.
+      # Reuse the Intel runner for packaging; this does not run on ARM hardware.
       - name: Cross-build and verify Apple Silicon app archive
         if: ${{ inputs.apple_silicon }}
         env:

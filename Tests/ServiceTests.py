@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise the real socket and persistence with power actions disabled."""
+"""Exercise IPC and persistence with temporary state and Unix sockets.
+
+Every coordinator uses --dry-run, including when a test enables its schedule.
+No installation or system launchd jobs are changed. These tests do not establish
+desktop warning visibility, user-switch behavior, or actual hardware sleep.
+"""
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -38,6 +43,7 @@ with tempfile.TemporaryDirectory(prefix="nightfall-ipc-", dir="/private/tmp") as
         raise AssertionError("The dry-run service did not start")
 
     def request(payload, raw=False):
+        """Frame requests independently of the app's Swift socket client."""
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(3)
             client.connect(sock)
@@ -54,6 +60,7 @@ with tempfile.TemporaryDirectory(prefix="nightfall-ipc-", dir="/private/tmp") as
         process.communicate(timeout=5)
 
     def rejected_storage(name, prepare):
+        """Unsafe or damaged storage must abort startup before accepting clients."""
         fixture = directory / name
         fixture.mkdir(mode=0o700)
         state = fixture / "state.json"
@@ -79,8 +86,8 @@ with tempfile.TemporaryDirectory(prefix="nightfall-ipc-", dir="/private/tmp") as
         assert "error" in request({"command": "execute", "path": "/bin/sh"})
         assert request({"command": "poll", "sessionID": "test-session", "isUsable": True})["dryRun"]
 
-        # Incomplete clients use separate, bounded workers and cannot stall the
-        # service's coordinator queue or another user's cancellation/settings.
+        # Occupy workers below the admission limit; a separate status request
+        # must remain responsive while those partial requests wait for input.
         idle = []
         try:
             for _ in range(12):
@@ -95,8 +102,8 @@ with tempfile.TemporaryDirectory(prefix="nightfall-ipc-", dir="/private/tmp") as
             for client in idle:
                 client.close()
 
-        # This used to restart a two-second read timeout after each byte. A
-        # single monotonic deadline must stop a trickling request in 2.5 seconds.
+        # Partial input must not reset the 2.5-second receive budget. The elapsed
+        # assertion allows scheduling jitter without accepting a restarted timeout.
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(4)
             client.connect(sock)
@@ -112,8 +119,8 @@ with tempfile.TemporaryDirectory(prefix="nightfall-ipc-", dir="/private/tmp") as
             assert "error" in json.loads(response.split(b"\n", 1)[0])
             assert time.monotonic() - started < 3.3, "A trickling request extended the receive deadline"
 
-        # A peer closing before the response must never terminate the service
-        # through SIGPIPE; the next connection remains usable.
+        # Closed peers must not terminate the service through SIGPIPE. Allow
+        # bounded connection rejection while workers from the burst drain.
         for _ in range(8):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.connect(sock)

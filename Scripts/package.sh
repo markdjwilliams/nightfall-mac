@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and validate a downloadable app without installing or starting it.
+# Rebuild a downloadable app and verify a fresh extraction without installation.
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
@@ -22,6 +22,8 @@ architectures="$(/usr/bin/lipo -archs "$app_dir/Contents/MacOS/Nightfall")"
 archive_name="Nightfall-$version-${architectures// /-}.zip"
 archive="$build_dir/$archive_name"
 
+# Preserve the bundle's metadata and permissions, then check what a recipient
+# extracts rather than relying only on the unarchived build's signature.
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app_dir" "$archive"
 /usr/bin/ditto -x -k "$archive" "$temporary"
 extracted_app="$temporary/Nightfall.app"

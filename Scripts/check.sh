@@ -1,5 +1,6 @@
 #!/bin/bash
-# Validate packaging without loading services, changing the system, or sleeping.
+# Validate source/plist metadata and an existing app build, if present.
+# Temporary helper copies check its signature independently; no jobs are loaded.
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -21,8 +22,8 @@ for script in "$script_dir"/*.sh; do /bin/bash -n "$script"; done
 if [[ -d "$project_dir/build/Nightfall.app" ]]; then
     version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$project_dir/build/Nightfall.app/Contents/Info.plist")"
     /usr/bin/grep -Fq "static let current = \"$version\"" "$project_dir/Sources/Nightfall/IPC.swift"
-    # Cross-built archives cannot execute on the host; test runtime metadata
-    # when a native slice is available, without requiring Rosetta.
+    # Execute --version only when the app contains the host's native slice.
+    # Cross-built slices are checked without launching them or requiring Rosetta.
     case " $(/usr/bin/lipo -archs "$project_dir/build/Nightfall.app/Contents/MacOS/Nightfall") " in
         *" $(/usr/bin/uname -m) "*) [[ "$("$project_dir/build/Nightfall.app/Contents/MacOS/Nightfall" --version)" == "$version" ]] ;;
     esac

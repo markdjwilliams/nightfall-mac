@@ -3,6 +3,8 @@ import Darwin
 import SystemConfiguration
 import IOKit.pwr_mgt
 
+/// Identifies the foreground desktop's user. A console UID alone does not prove
+/// the desktop is unlocked or that its warning can receive input.
 func currentConsoleUID() -> UInt32? {
     var uid: uid_t = 0
     var gid: gid_t = 0
@@ -11,6 +13,10 @@ func currentConsoleUID() -> UInt32? {
     return uid
 }
 
+/// Owns one machine-wide schedule. Once serving, `queue` serializes the
+/// engine, agent presence, and persistence metadata. Socket workers perform I/O
+/// outside that queue and enter it only to handle a decoded request.
+/// The lifetime file lock excludes another coordinator using the same storage.
 final class NightfallDaemon {
     private let queue = DispatchQueue(label: "com.nightfall.mac.coordinator")
     private let engine: ScheduleEngine
@@ -23,6 +29,8 @@ final class NightfallDaemon {
     private var lastSaved: EngineState?
     private var storageHealthy = true
 
+    /// Inspects the opened inode, rather than trusting a second pathname lookup.
+    /// A single file link rejects hard-linked aliases of the lock or saved state.
     private static func validateOwnedItem(_ fd: Int32, type: mode_t, name: String) throws {
         var information = stat()
         guard fstat(fd, &information) == 0 else { throw SocketError.system("Inspect \(name)", errno) }
@@ -40,13 +48,14 @@ final class NightfallDaemon {
         guard dryRun || geteuid() == 0 else { throw SocketError.system("Service requires administrator installation", EPERM) }
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        // Installation checks are not a substitute for validating privileged
-        // storage on every launch. O_NOFOLLOW and descriptor checks also avoid
-        // following a replaced state/lock file before its contents are trusted.
+        // The installer protects the parent directories; each launch also checks
+        // the final directory and file inodes. openat anchors file lookup to this
+        // directory descriptor, and O_NOFOLLOW rejects final-component symlinks.
         let directoryFD = open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directoryFD >= 0 else { throw SocketError.system("Open state directory", errno) }
         defer { Darwin.close(directoryFD) }
         try Self.validateOwnedItem(directoryFD, type: S_IFDIR, name: "state directory")
+        // Nonblocking opens let validation reject FIFOs without waiting for a peer.
         let openedLock = openat(directoryFD, "service.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
         guard openedLock >= 0 else { throw SocketError.system("Open service lock", errno) }
         var retainLock = false
@@ -60,7 +69,8 @@ final class NightfallDaemon {
         if stateFD >= 0 {
             let file = FileHandle(fileDescriptor: stateFD, closeOnDealloc: true)
             try Self.validateOwnedItem(stateFD, type: S_IFREG, name: "saved state")
-            // A damaged state must not silently re-enable an already skipped occurrence.
+            // Only a missing file permits defaults. Invalid or unreadable saved
+            // state aborts startup rather than silently forgetting consumed dates.
             state = try Wire.decoder().decode(EngineState.self, from: file.readToEnd() ?? Data())
             try state.settings.validate()
         } else if errno == ENOENT {
@@ -78,6 +88,9 @@ final class NightfallDaemon {
         if lockFD >= 0 { Darwin.close(lockFD) }
     }
 
+    /// Called during startup, then only on the coordinator queue once serving.
+    /// A failed write leaves in-memory state intact for a later retry, but callers
+    /// must not request sleep on `false`.
     private func persist() -> Bool {
         if lastSaved == engine.state && storageHealthy { return true }
         do {
@@ -100,8 +113,11 @@ final class NightfallDaemon {
         let before = engine.state.pending
         let shouldSleep = engine.tick(now: now, consoleUID: console, presence: console.flatMap { agents[$0] },
                                       uptime: ProcessInfo.processInfo.systemUptime)
-        // Consume and save the occurrence before making a power request; never retry it.
+        // The engine consumes an approved occurrence before returning true.
+        // Persist that decision before power to preserve it across service restarts.
         guard persist(), shouldSleep else { return }
+        // Disk I/O may take time. Recheck the console and heartbeat afterward to
+        // narrow the user-switch race before handing control to macOS.
         let finalConsole = currentConsoleUID()
         let verificationTime = Date()
         guard let expected = before, let uid = expected.recipientUID,
@@ -124,6 +140,8 @@ final class NightfallDaemon {
             _ = persist()
             return
         }
+        // Success reports acceptance of the request, not an observed hardware
+        // sleep transition; macOS and its drivers retain control of that transition.
         let result = IOPMSleepSystem(port)
         IOServiceClose(port)
         if result != kIOReturnSuccess {
@@ -132,6 +150,10 @@ final class NightfallDaemon {
         }
     }
 
+    /// Runs on `queue` with the kernel-reported peer UID, never a UID from JSON.
+    /// Peer credentials identify a user, not a signed app; presentation fields
+    /// remain that user's claims. All accepted users may prevent sleep, while
+    /// schedule changes require the active desktop except in isolated dry runs.
     private func handle(_ request: ServiceRequest, uid: UInt32) -> ServiceResponse {
         let now = Date()
         var message: String?
@@ -160,8 +182,8 @@ final class NightfallDaemon {
         default: message = "Unknown request."
         }
         if !persist() { message = "The schedule could not be saved. Automatic sleep is suspended until storage recovers." }
-        // The UI needs recent dates only. Full history stays on disk so responses
-        // remain bounded even after years of use.
+        // Trim only the response copy. Authoritative state retains consumed dates
+        // for clock-rollback protection; IPC carries a bounded recent history.
         var snapshot = engine.state
         snapshot.handledDays = Array(snapshot.handledDays.suffix(60))
         return ServiceResponse(state: snapshot, nextRun: engine.nextRun(after: now), error: message, dryRun: dryRun)
@@ -171,7 +193,9 @@ final class NightfallDaemon {
         _ = persist()
         let listener = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard listener >= 0 else { throw SocketError.system("Create listener", errno) }
-        // Protected parent /var/run prevents ordinary users from replacing this socket.
+        // Production uses protected /var/run; dry runs supply a private test path.
+        // The socket admits all users, but getpeereid and command authorization
+        // below determine what each connection can do.
         unlink(socketPath)
         var address = try LocalSocket.address(socketPath)
         let bindResult = withUnsafePointer(to: &address) {
@@ -187,7 +211,9 @@ final class NightfallDaemon {
         timer.setEventHandler { [weak self] in self?.tick() }
         self.timer = timer
         timer.resume()
-        // A slow client never blocks the safety timer or other clients.
+        // Socket I/O stays off the coordinator queue. Bound concurrent workers
+        // and close excess connections; this keeps slow peers off the safety
+        // timer, but does not promise request availability during a flood.
         let admission = DispatchSemaphore(value: 16)
         DispatchQueue.global(qos: .utility).async { [self] in
             while true {

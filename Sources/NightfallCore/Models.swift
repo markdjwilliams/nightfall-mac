@@ -1,9 +1,13 @@
 import Foundation
 
+/// The shared schedule, interpreted in the engine calendar's local time zone.
+/// Construction and decoding preserve values; callers validate before use.
 public struct Settings: Codable, Equatable {
     public var enabled: Bool
     public var hour: Int
     public var minute: Int
+    /// Full countdown after visible presentation is acknowledged. A late
+    /// acknowledgment can move sleep beyond the configured hour and minute.
     public var warningSeconds: Int
     public var chimeEnabled: Bool
 
@@ -59,15 +63,25 @@ public struct Settings: Codable, Equatable {
     }
 }
 
+/// A consumed occurrence awaiting or receiving live presentation acknowledgments.
+/// Persisting this record protects against repeats; restoration skips it rather
+/// than resuming a countdown whose presentation continuity cannot be established.
 public struct PendingWarning: Codable, Equatable {
     public var id: String
+    /// Target sleep date in the engine calendar, even if the warning starts yesterday.
     public var day: String
+    /// Original intended sleep time, before presentation delays or user switches.
     public var scheduledAt: Date
+    /// Wall-clock countdown end; provisional until the recipient acknowledges visibility.
     public var deadline: Date
     public var warningSeconds: Int
     public var recipientUID: UInt32?
+    /// Identifies an agent instance so a new login or restarted app gets a full countdown.
     public var recipientSessionID: String?
+    /// Creation time before the first visible acknowledgment, then the latest
+    /// engine time accepting visible evidence. Recipient changes do not renew grace.
     public var awaitingSince: Date
+    /// Whether the latest engine step accepted visible presentation for this recipient.
     public var presented: Bool
 
     public init(id: String, day: String, scheduledAt: Date, deadline: Date,
@@ -86,6 +100,8 @@ public struct PendingWarning: Codable, Equatable {
     }
 }
 
+/// Most recent consumption or power-request outcome. `day` identifies the target
+/// sleep date; `date` records when the outcome happened and can fall on another day.
 public struct LastOutcome: Codable, Equatable {
     public var day: String
     public var date: Date
@@ -98,11 +114,14 @@ public struct LastOutcome: Codable, Equatable {
     }
 }
 
+/// Durable scheduler state. The owner saves mutations before attempting sleep.
 public struct EngineState: Codable, Equatable {
     public var settings: Settings
     public var lastOutcome: LastOutcome?
     public var pending: PendingWarning?
-    /// Day keys are retained so a clock rollback cannot repeat an occurrence.
+    /// Consumed target-date keys, including any pending warning. History is kept
+    /// across restarts and clock rollback; a UI's shortened snapshot is not a
+    /// replacement for the full history when restoring the engine.
     public var handledDays: [String]
 
     public init(settings: Settings = Settings(), lastOutcome: LastOutcome? = nil,
@@ -126,11 +145,14 @@ public struct EngineState: Codable, Equatable {
     }
 }
 
+/// Transient presentation evidence. The owner obtains `uid` from the authenticated
+/// peer and stamps `lastSeen` itself; the engine does not authenticate these values.
 public struct AgentPresence: Equatable {
     public var uid: UInt32
     public var sessionID: String
     public var lastSeen: Date
     public var isUsable: Bool
+    /// The warning the agent reports as visible and able to receive input.
     public var visibleWarningID: String?
 
     public init(uid: UInt32, sessionID: String, lastSeen: Date,

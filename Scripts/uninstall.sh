@@ -1,4 +1,6 @@
 #!/bin/bash
+# Requires administrator authorization. Remove fixed Nightfall paths, including
+# shared schedule state, only after launchd confirms the root service is absent.
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 077
@@ -9,6 +11,8 @@ valid_uid() {
     [[ "$1" =~ ^[0-9]{3,10}$ ]] && (( 10#$1 >= 500 && 10#$1 <= 4294967294 ))
 }
 
+# A missing job (or a user signing out) is acceptable; other inspection/stop
+# failures abort before deleting files. Check absence again after bootout.
 stop_service() {
     local target="$1" result
     if /bin/launchctl print "$target" >/dev/null 2>&1; then
@@ -41,6 +45,8 @@ main() {
         fail 'Usage: uninstall.sh [--caller-uid UID]'
     fi
 
+    # Process UIDs include network accounts missing from the local directory;
+    # launchd then distinguishes graphical logins from background/SSH sessions.
     users="$(/usr/bin/dscl . -list /Users UniqueID | /usr/bin/awk '$2 >= 500 {print $2}' | /usr/bin/sort -n -u)" || fail 'Could not list signed-in users.'
     process_users="$(/bin/ps -axo uid= | /usr/bin/awk '$1 >= 500 {print $1}')" || fail 'Could not list user processes.'
     users="$(printf '%s\n%s\n' "$users" "$process_users" | /usr/bin/sort -n -u)"
@@ -54,7 +60,7 @@ main() {
         fi
     done <<< "$users"
 
-    # Network accounts may be absent from the local directory's user list.
+    # Inspect the caller separately so its agent can remain until cleanup ends.
     if [[ -n "$caller_uid" ]]; then
         if /bin/launchctl print "gui/$caller_uid/com.nightfall.mac.agent" >/dev/null 2>&1; then
             caller_loaded=1
@@ -71,6 +77,7 @@ main() {
         stop_service "gui/$uid/com.nightfall.mac.agent"
     done
 
+    # Deletion targets are fixed; no caller-supplied path is passed to rm.
     /bin/rm -f /Library/LaunchAgents/com.nightfall.mac.agent.plist \
         /Library/LaunchDaemons/com.nightfall.mac.daemon.plist \
         /Library/PrivilegedHelperTools/com.nightfall.mac.daemon \
@@ -89,5 +96,6 @@ main() {
     printf 'Nightfall, its system services, and its saved schedule have been removed.\n'
 }
 
-# Parse the full procedure before deleting the bundle that contains this script.
+# Define the entire procedure before it deletes its own bundle, so completion
+# does not depend on reading further commands from this script's file.
 main "$@"

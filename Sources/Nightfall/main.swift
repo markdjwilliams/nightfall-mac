@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 
+// The app and privileged helper share this executable. Dispatch non-GUI modes
+// before creating NSApplication so the service needs no graphical login.
 let arguments = CommandLine.arguments
 func value(after flag: String) -> String? {
     guard let index = arguments.firstIndex(of: flag), arguments.count > index + 1 else { return nil }
@@ -12,6 +14,8 @@ if arguments.contains("--version") {
 } else if arguments.contains("--daemon") {
     do {
         let dryRun = arguments.contains("--dry-run")
+        // Daemon path overrides are honored only in dry-run mode, which disables
+        // power requests so integration tests can use isolated temporary storage.
         let directory = dryRun ? (value(after: "--state-dir") ?? NSTemporaryDirectory() + "Nightfall-test") : NightfallPaths.stateDirectory
         let socket = dryRun ? (value(after: "--socket") ?? directory + "/service.sock") : NightfallPaths.socket
         try NightfallDaemon(directory: directory, socketPath: socket, dryRun: dryRun).run()
@@ -26,6 +30,8 @@ if arguments.contains("--version") {
         print(String(decoding: data, as: UTF8.self))
     } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
 } else if let path = value(after: "--render-preview") {
+    // Static previews bypass AppDelegate and service polling, using synthetic
+    // state solely to render the same views used by the running app.
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     let model = AppModel()

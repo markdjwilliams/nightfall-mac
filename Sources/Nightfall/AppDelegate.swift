@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Darwin
 
+/// Owns one login's menu and windows; the system service owns sleep decisions.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     let model = AppModel()
     private var statusItem: NSStatusItem!
@@ -40,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
+    /// Runs without claiming the agent lock or starting service polling. Existing
+    /// agents keep running until the installer is ready to replace and restart them.
     private func offerDownloadedInstallation() {
         let alert = NSAlert()
         alert.messageText = "Install Nightfall \(NightfallVersion.current) for all users?"
@@ -63,6 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
+    /// Holds a per-user lock for this process's lifetime, redirecting later app
+    /// launches to the owner. This coordinates UI copies; it does not authenticate IPC.
     private func claimInstance() -> Bool {
         let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/com.nightfall.mac")
         do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
@@ -140,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
+    /// Avoids repeated activation and chimes on routine polls, but permits a fresh
+    /// presentation after an unusable session. Showing the window alone never
+    /// authorizes a power request.
     private func update() {
         statusItem.button?.toolTip = model.statusText
         guard let warning = model.warning else {
@@ -182,6 +190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             warningSound?.volume = 0.5
             warningSound?.play()
         }
+        // Window ordering can be asynchronous. The model acknowledges only if
+        // visibility and input focus checks actually pass on this or a later poll.
         model.poll()
     }
 

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run a rewritten installer against temporary files and simulated launchd jobs."""
+"""Check installer ordering and rollback using a disposable script copy.
+
+System paths point into a temporary filesystem, and privileged tools are mocked.
+These tests cover control flow and file recovery, not macOS authorization,
+publisher identity, or real launchd behavior.
+"""
 import json
 import os
 from pathlib import Path
@@ -57,7 +62,7 @@ if name == "stat":
     sys.exit(0)
 if name == "codesign": sys.exit(0)
 if name in ("rm", "mv", "cp", "install", "chown", "chmod", "ditto"):
-    # Restrict every privileged write even if the installer rewrite is wrong.
+    # Reject absolute arguments outside the fixture before using real file tools.
     for arg in args:
         if arg.startswith("/") and not pathlib.Path(arg).is_relative_to(root):
             raise SystemExit("Refusing path outside test fixture: " + arg)
@@ -83,6 +88,7 @@ raise SystemExit("Unexpected mock command: " + name)
 
 class InstallerTests(unittest.TestCase):
     def setUp(self):
+        """Create old/new app fixtures and redirect only the disposable installer."""
         self.temporary = tempfile.TemporaryDirectory(prefix="nightfall-install-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -93,6 +99,8 @@ class InstallerTests(unittest.TestCase):
         self.agent_plist = self.filesystem / "Library/LaunchAgents/com.nightfall.mac.agent.plist"
         self.state_directory = self.filesystem / "Library/Application Support/Nightfall"
         self.state_directory.mkdir(parents=True, mode=0o700)
+        # State and an unrelated app detect cleanup that reaches beyond the
+        # files being upgraded, even when replacement or rollback fails.
         self.saved_state = self.state_directory / "state.json"
         self.saved_state.write_text("keep schedule")
         for path, text in ((self.helper, "old helper"), (self.daemon_plist, "old daemon plist"),
@@ -107,6 +115,7 @@ class InstallerTests(unittest.TestCase):
         self.unrelated.write_text("keep")
         self.state = {"loaded": [DAEMON, CALLER, OTHER], "domains": ["gui/501", "gui/502"]}
         source = SOURCE.read_text()
+        # Bypass authorization only in this copy; the shipped script is untouched.
         guard = '[[ "$EUID" -eq 0 ]]'
         self.assertEqual(source.count(guard), 1)
         source = source.replace(guard, "[[ 1 -eq 1 ]]")
@@ -125,6 +134,7 @@ class InstallerTests(unittest.TestCase):
 
     @staticmethod
     def make_app(path, content):
+        """Provide the bundle layout consumed by the script, without real code signing."""
         (path / "Contents/MacOS").mkdir(parents=True)
         helper = path / "Contents/Library/LaunchServices/com.nightfall.mac.daemon"
         helper.parent.mkdir(parents=True)
@@ -137,6 +147,7 @@ class InstallerTests(unittest.TestCase):
             "CFBundleIdentifier": "com.nightfall.mac", "CFBundleExecutable": "Nightfall"}))
 
     def run_fixture(self, *args, sudo_uid=""):
+        """Record simulated service/file operations and enforce retained-file checks."""
         (self.root / "mock-state.json").write_text(json.dumps(self.state))
         environment = os.environ.copy()
         environment.update(NIGHTFALL_TEST_ROOT=str(self.root), SUDO_UID=sudo_uid)

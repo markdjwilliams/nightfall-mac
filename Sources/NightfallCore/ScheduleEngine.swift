@@ -1,17 +1,24 @@
 import Foundation
 
-/// A single-owner state machine. Its owner persists `state` before delivering
-/// warnings and before acting on a `true` result from `tick`.
+/// A state machine with no storage, UI, or power API calls. One owner serializes
+/// access, persists state changes, and suppresses power requests if saving fails.
+/// A `true` tick permits one power attempt after persistence and a final owner-side
+/// check that the active user and presentation evidence are still current.
 public final class ScheduleEngine {
     public private(set) var state: EngineState
     private var calendar: Calendar
     private var lastTick: Date
     private var lastUptime: TimeInterval?
+    // Cumulative wall/monotonic elapsed-time difference for the current warning.
+    // It is transient: restoring a persisted warning always consumes it safely.
     private var warningClockDrift: TimeInterval = 0
     private let presentationGrace: TimeInterval = 10
     private let freshness: TimeInterval = 4
     private let maximumLateness: TimeInterval = 90
 
+    /// Restores a snapshot without resuming interrupted warnings. Production
+    /// owners supply monotonic uptime here and on every tick; omitting it leaves
+    /// clock-drift detection unavailable, as in tests that supply wall time alone.
     public init(state: EngineState, now: Date, calendar: Calendar = .autoupdatingCurrent,
                 uptime: TimeInterval? = nil) {
         self.state = state
@@ -33,8 +40,10 @@ public final class ScheduleEngine {
         skipMissedOccurrence(now: now)
     }
 
-    /// Returns true at most once per day, only after continuous, acknowledged
-    /// presentation to the active user's fresh and usable agent.
+    /// Returns true at most once per target sleep date after a full acknowledged
+    /// countdown with fresh, usable presentation evidence. The target is consumed
+    /// before returning true. Sample wall-clock `now` and monotonic `uptime` close
+    /// together; wall time schedules the event, uptime detects clock adjustments.
     @discardableResult
     public func tick(now: Date, consoleUID: UInt32?, presence: AgentPresence?,
                      uptime: TimeInterval? = nil) -> Bool {
@@ -51,7 +60,8 @@ public final class ScheduleEngine {
             }
             // A small wall-clock adjustment can shorten the countdown without
             // exceeding the pause grace. Compare elapsed time on a monotonic
-            // clock when the owner supplies it, allowing normal sampling jitter.
+            // clock when supplied. Accumulation also catches several small
+            // corrections; one second of tolerance allows normal sampling jitter.
             if let uptimeGap {
                 warningClockDrift += gap - uptimeGap
                 if !uptimeGap.isFinite || uptimeGap < 0 || abs(warningClockDrift) > 1 {
@@ -100,6 +110,9 @@ public final class ScheduleEngine {
         return false
     }
 
+    /// Validates before mutating and leaves identical settings untouched. A change
+    /// consumes any pending warning; otherwise old-schedule misses are recorded
+    /// before replacing settings.
     public func updateSettings(_ settings: Settings, now: Date) throws {
         try settings.validate()
         guard settings != state.settings else { return }
@@ -112,6 +125,9 @@ public final class ScheduleEngine {
         state.settings = settings
     }
 
+    /// Skips the pending warning or next eligible unhandled sleep, which may
+    /// belong to tomorrow. Repeated calls can skip successive dates; an idle,
+    /// disabled schedule is unchanged.
     public func skipTonight(now: Date) {
         if let pending = state.pending {
             finish(day: pending.day, now: now, message: "Skipped this scheduled sleep.")
@@ -130,16 +146,21 @@ public final class ScheduleEngine {
         finish(day: dayKey(due), now: now, message: "Skipped this scheduled sleep.")
     }
 
+    /// Consumes only the matching warning, making stale or duplicate cancels harmless.
     public func cancelWarning(id: String, now: Date) {
         guard let pending = state.pending, pending.id == id else { return }
         finish(day: pending.day, now: now, message: "Skipped for today by the active user.")
     }
 
+    /// Finds the next unhandled intended sleep time strictly after the argument.
+    /// A pending warning is already handled; its possibly extended deadline is
+    /// represented by `state.pending` instead of this schedule lookup.
     public func nextRun(after: Date) -> Date? {
         guard state.settings.enabled, (try? state.settings.validate()) != nil else { return nil }
         var cursor = after
         let components = DateComponents(hour: state.settings.hour, minute: state.settings.minute, second: 0)
-        // A finite handled-day set can exclude at most this many candidates.
+        // Bound the search by saved history, with slack for a repeated local
+        // hour at the initial cursor. Each match advances the search cursor.
         for _ in 0...(state.handledDays.count + 1) {
             guard let next = calendar.nextDate(after: cursor, matching: components,
                                                matchingPolicy: .nextTime,
@@ -151,6 +172,8 @@ public final class ScheduleEngine {
         return nil
     }
 
+    /// Records an owner-side failure after a sleep decision without reopening its occurrence.
+    /// Reusing the recent outcome's target day preserves cross-midnight identity.
     public func recordFailure(_ message: String, now: Date) {
         let day: String
         if let outcome = state.lastOutcome, calendar.isDate(outcome.date, inSameDayAs: now) {
@@ -165,8 +188,8 @@ public final class ScheduleEngine {
         guard var pending = state.pending else { return false }
         let agent = usablePresence(presence, consoleUID: consoleUID, now: now)
 
-        // awaitingSince is the creation time while awaiting a presentation, and
-        // the most recent visible heartbeat during a presentation.
+        // Check grace before changing recipients: repeated user/session switches
+        // must not indefinitely extend an unseen warning's presentation budget.
         if now.timeIntervalSince(pending.awaitingSince) > presentationGrace {
             let reason = agent == nil
                 ? "Skipped because the active user did not have an available Nightfall app."
@@ -175,6 +198,8 @@ public final class ScheduleEngine {
             return false
         }
 
+        // Both user changes and agent restarts require a new visible
+        // acknowledgment before their full countdown can begin.
         if pending.recipientUID != consoleUID {
             pending.recipientUID = consoleUID
             pending.recipientSessionID = nil
@@ -220,6 +245,7 @@ public final class ScheduleEngine {
         return presence
     }
 
+    /// Consumes missed warning starts without catching up with a late countdown.
     private func skipMissedOccurrence(now: Date) {
         guard state.settings.enabled else { return }
         for due in candidateSleepTimes(around: now) {
@@ -231,7 +257,8 @@ public final class ScheduleEngine {
         }
     }
 
-    /// A warning may begin on the calendar date before its target sleep date.
+    /// Includes tomorrow because its warning may start tonight. Calendar-day
+    /// arithmetic also handles dates that contain fewer or more than 24 hours.
     private func candidateSleepTimes(around now: Date) -> [Date] {
         let start = calendar.startOfDay(for: now)
         guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: start) else { return [] }
@@ -241,6 +268,8 @@ public final class ScheduleEngine {
     private func scheduledTime(on date: Date) -> Date? {
         guard (try? state.settings.validate()) != nil else { return nil }
         let start = calendar.startOfDay(for: date)
+        // Start just before midnight so 00:00 is included. A missing local time
+        // moves to the next valid time; a repeated time uses its first occurrence.
         return calendar.nextDate(after: start.addingTimeInterval(-1),
                                  matching: DateComponents(hour: state.settings.hour,
                                                           minute: state.settings.minute, second: 0),
@@ -248,6 +277,7 @@ public final class ScheduleEngine {
                                  direction: .forward)
     }
 
+    /// Local calendar date identity, independent of the warning's presentation date.
     private func dayKey(_ date: Date) -> String {
         let c = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)

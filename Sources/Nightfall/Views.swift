@@ -127,6 +127,8 @@ struct NightfallView: View {
     }
 }
 
+/// Displays countdowns without initiating sleep. For live warnings, the service
+/// owns the deadline and the model reports presentation; previews use local state.
 struct WarningView: View {
     @ObservedObject var model: AppModel
     var body: some View {

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise a rewritten copy only: no privileges, real services, or system files."""
+"""Check removal ordering using temporary files and simulated launchd jobs.
+
+Only a disposable script copy loses its root guard and receives rewritten system
+paths/tool commands. These tests cover cleanup and error handling; they do not
+establish real authorization or launchd process-termination behavior.
+"""
 import json
 import os
 from pathlib import Path
@@ -48,7 +53,7 @@ if name == "launchctl":
         state_file.write_text(json.dumps(state))
         sys.exit(0)
 if name == "rm":
-    # Even a fixture rewrite bug must never let this mock touch a system path.
+    # Reject deletion arguments outside the fixture before delegating to rm.
     for arg in args:
         if not arg.startswith("-"):
             path = pathlib.Path(arg)
@@ -61,6 +66,7 @@ raise SystemExit("Unexpected mock command")
 
 class UninstallTests(unittest.TestCase):
     def setUp(self):
+        """Put the copied script inside the fixture app so it must remove itself."""
         self.temporary = tempfile.TemporaryDirectory(prefix="nightfall-uninstall-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -77,6 +83,7 @@ class UninstallTests(unittest.TestCase):
             path = self.filesystem / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
+        # A neighboring app must survive every success and failure scenario.
         self.unrelated = self.filesystem / "Applications/Other.app/keep.txt"
         self.unrelated.parent.mkdir(parents=True)
         self.unrelated.write_text("keep")
@@ -100,6 +107,7 @@ class UninstallTests(unittest.TestCase):
         self.script.write_text(source)
 
     def run_fixture(self, *args, sudo_uid=""):
+        """Run the copy without privileges and return its ordered mock-tool calls."""
         (self.root / "mock-state.json").write_text(json.dumps(self.state))
         environment = os.environ.copy()
         environment.update(NIGHTFALL_TEST_ROOT=str(self.root), SUDO_UID=sudo_uid)

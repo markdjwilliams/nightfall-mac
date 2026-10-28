@@ -1,5 +1,7 @@
 #!/bin/bash
-# Install only Nightfall's own system service and per-user menu bar agent.
+# Requires administrator authorization and an absolute source bundle path.
+# Stage and validate the app before replacement; preserve shared schedule state.
+# Failed upgrades attempt rollback and retain remaining backups if it fails.
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 077
@@ -28,6 +30,8 @@ stop_service() {
 [[ "$#" -eq 1 || ( "$#" -eq 3 && "$2" == '--caller-uid' ) ]] || fail 'Usage: install.sh /absolute/path/Nightfall.app [--caller-uid UID]'
 [[ "$1" == /* ]] || fail 'The source app path must be absolute.'
 source_app="$1"
+# The caller ID only controls restart ordering; it does not confer privileges.
+# The invoking app or shell must already have obtained root privileges.
 caller_uid=''
 if [[ "$#" -eq 3 ]]; then
     valid_uid "$3" || fail 'Invalid caller user ID.'
@@ -43,6 +47,7 @@ state='/Library/Application Support/Nightfall'
 daemon_label='com.nightfall.mac.daemon'
 agent_label='com.nightfall.mac.agent'
 stage=''
+# Stopped jobs need recovery even if replacement of installed files never began.
 changes_started=0
 files_started=0
 daemon_was_loaded=0
@@ -55,9 +60,8 @@ new_app_installed=0
 gui_uids=()
 old_agent_uids=()
 
-# Privileged code is kept here rather than in /Applications, whose parent is
-# normally group-writable. An administrator could otherwise replace the app
-# without authorization and have launchd execute that replacement as root.
+# /Applications can be writable by the administrator group. Keep launchd's root
+# executable and job definitions in directories that disallow group/other writes.
 for directory in /Library/PrivilegedHelperTools /Library/LaunchDaemons /Library/LaunchAgents '/Library/Application Support'; do
     [[ ! -L "$directory" ]] || fail "Refusing symbolic-link directory: $directory"
     if [[ ! -d "$directory" ]]; then /usr/bin/install -d -o root -g wheel -m 755 "$directory"; fi
@@ -102,6 +106,8 @@ else
     [[ "$result" -eq 113 ]] || fail "Could not inspect Nightfall's system service (error $result)."
 fi
 
+# Preserve the triggering exit status. Recover stopped jobs separately from
+# replaced files; retain remaining backups when recovery is incomplete.
 cleanup() {
     result=$?
     recovered=1
@@ -119,6 +125,7 @@ cleanup() {
                 if [[ "$new_app_installed" -eq 1 ]]; then /bin/rm -rf "$app" || recovered=0; fi
                 /bin/rm -f "$helper" "$daemon_plist" "$agent_plist" || recovered=0
                 if [[ "$old_app" -eq 1 ]]; then
+                    # mv into an existing directory would nest the backup.
                     if [[ ! -e "$app" && ! -L "$app" ]]; then /bin/mv "$stage/previous.app" "$app" || recovered=0
                     else recovered=0; fi
                 fi
@@ -145,6 +152,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
+# Inspect a protected copy rather than the user-writable source bundle. Ad hoc
+# signature checks detect corruption, but do not establish publisher identity.
 stage="$(/usr/bin/mktemp -d '/Library/PrivilegedHelperTools/.nightfall-install.XXXXXX')"
 /usr/bin/ditto "$source_app" "$stage/Nightfall.app"
 staged_app="$stage/Nightfall.app"
@@ -195,7 +204,8 @@ cat > "$stage/new-agent.plist" <<'PLIST'
 PLIST
 /usr/bin/plutil -lint "$stage/new-daemon.plist" "$stage/new-agent.plist" >/dev/null
 
-# Stage backups before stopping either service. State stays in place on upgrades.
+# Back up privileged files before stopping jobs. Move the old app only when
+# replacement begins; the shared schedule directory stays in place throughout.
 if [[ -e "$helper" ]]; then /bin/cp -p "$helper" "$stage/previous-helper"; old_helper=1; fi
 if [[ -e "$daemon_plist" ]]; then /bin/cp -p "$daemon_plist" "$stage/previous-daemon.plist"; old_daemon_plist=1; fi
 if [[ -e "$agent_plist" ]]; then /bin/cp -p "$agent_plist" "$stage/previous-agent.plist"; old_agent_plist=1; fi

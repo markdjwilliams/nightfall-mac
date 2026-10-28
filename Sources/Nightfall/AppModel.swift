@@ -2,6 +2,11 @@ import AppKit
 import SwiftUI
 import CoreGraphics
 
+/// Main-thread UI state and actions for one login session.
+///
+/// `state` is the last service snapshot; `draft` holds independent, unsaved edits.
+/// Blocking transport runs on a serial background queue. Responses and action
+/// completions return to the main thread before updating the UI.
 final class AppModel: ObservableObject {
     enum InstallationResult {
         case success, cancelled
@@ -26,6 +31,8 @@ final class AppModel: ObservableObject {
     var previewOnly = false
     var performingMaintenance: Bool { installing || uninstalling }
     private var timer: Timer?
+    // Include queued requests until their responses have been applied on the
+    // main thread, so a poll cannot slip between unfinished user actions.
     private var requestsInFlight = 0
     private let transport = DispatchQueue(label: "com.nightfall.mac.client")
     private let requestService: (ServiceRequest) throws -> ServiceResponse
@@ -33,6 +40,7 @@ final class AppModel: ObservableObject {
     private var screenAwake = true
     private var observers: [NSObjectProtocol] = []
 
+    /// Allows tests to control response timing without contacting a real service.
     init(requestService: @escaping (ServiceRequest) throws -> ServiceResponse = { try LocalSocket.request($0) }) {
         self.requestService = requestService
     }
@@ -87,16 +95,19 @@ final class AppModel: ObservableObject {
         poll()
     }
 
+    /// Public session and workspace signals permit attempting presentation.
+    /// Window visibility and input focus are checked separately before acknowledgment.
     var isCurrentSessionUsable: Bool {
         guard sessionActive, screenAwake,
               let session = CGSessionCopyCurrentDictionary() as? [String: Any],
               session[kCGSessionOnConsoleKey as String] as? Bool == true,
               session[kCGSessionLoginDoneKey as String] as? Bool == true,
               currentConsoleUID() == getuid() else { return false }
-        // No Accessibility, screen recording, private lock keys, or automation access.
         return true
     }
 
+    /// Acknowledges only this process's live warning while it can receive input.
+    /// The service independently checks the console owner and heartbeat freshness.
     private var visibleWarningID: String? {
         guard isCurrentSessionUsable, previewWarning == nil, !cancellingWarning, let pending = state?.pending,
               let window = warningWindow, window.isVisible, window.isOnActiveSpace,
@@ -111,6 +122,9 @@ final class AppModel: ObservableObject {
         exchange(request, quiet: true)
     }
 
+    /// Applies a service snapshot before calling `completion` and then `onUpdate`.
+    /// Both callbacks run on the main thread. A successful transport result may
+    /// still contain `response.error`; mutations must check the service's acknowledgment.
     private func exchange(_ request: ServiceRequest, quiet: Bool = false,
                           completion: ((Result<ServiceResponse, Error>) -> Void)? = nil) {
         requestsInFlight += 1
@@ -188,16 +202,20 @@ final class AppModel: ObservableObject {
         exchange(ServiceRequest(command: "skip")) { [weak self] _ in self?.skipping = false }
     }
 
+    /// Closes previews locally, or cancels the specific warning shown to the user.
+    /// While cancellation is pending, polls stop acknowledging its presentation.
     func cancelWarning() {
         if previewWarning != nil { previewWarning = nil; onUpdate?(); return }
         guard !cancellingWarning, let warning = state?.pending else { return }
         cancellingWarning = true
-        // Keep the warning open until the service confirms the cancellation.
+        // An ID-bound cancellation cannot accidentally consume a later occurrence
+        // if this warning has already ended by the time the service receives it.
         exchange(ServiceRequest(command: "cancel", warningID: warning.id)) { [weak self] _ in
             self?.cancellingWarning = false
         }
     }
 
+    /// Creates local display state without consuming a scheduled occurrence.
     func preview() {
         guard state?.pending == nil else { onUpdate?(); return }
         let now = Date()
@@ -208,6 +226,9 @@ final class AppModel: ObservableObject {
         onUpdate?()
     }
 
+    /// Runs the bundled installer through macOS administrator authorization.
+    /// Completion runs on the main thread; success hands this copy's lifecycle
+    /// to the installed login agent and schedules this copy to quit.
     func install(completion: ((InstallationResult) -> Void)? = nil) {
         guard !performingMaintenance else {
             completion?(.failure("Another installation or removal is already in progress."))
@@ -295,7 +316,9 @@ final class AppModel: ObservableObject {
     }
 }
 
+/// Quotes one literal shell argument before embedding the command in AppleScript.
 func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+/// Encodes the completed shell command as an AppleScript string literal.
 func appleScriptQuote(_ text: String) -> String {
     "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
 }

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Requires macOS and Apple Command Line Tools. Produces a single-architecture,
+# ad hoc signed app in build/ without installing it or starting its services.
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
@@ -27,11 +29,13 @@ sources=("$project_dir"/Sources/NightfallCore/*.swift "$project_dir"/Sources/Nig
     -framework AppKit -framework SwiftUI -framework SystemConfiguration -framework IOKit \
     "${sources[@]}" -o "$app_dir/Contents/MacOS/Nightfall"
 
-# Sign the standalone service before the app adds its bundle-specific signature.
+# The installer copies this executable out of the app for launchd, so it needs
+# its own identifier/signature. Sign nested code before sealing the app bundle.
 /usr/bin/install -m 755 "$app_dir/Contents/MacOS/Nightfall" "$helper_executable"
 /usr/bin/codesign --force --sign - --identifier com.nightfall.mac.daemon --timestamp=none "$helper_executable"
 /usr/bin/codesign --verify --strict "$helper_executable"
 
+# Icon generation runs on the build host even when the app is cross-compiled.
 /usr/bin/xcrun swiftc -swift-version 5 -O -framework AppKit \
     "$project_dir/Resources/GenerateIcon.swift" -o "$build_dir/tools/generate-icon"
 "$build_dir/tools/generate-icon" "$build_dir/Nightfall.iconset" "$build_dir/Nightfall-fallback.icns"
@@ -43,6 +47,8 @@ fi
 /usr/bin/install -m 755 "$script_dir/uninstall.sh" "$app_dir/Contents/Resources/uninstall.sh"
 /usr/bin/install -m 644 "$project_dir/LICENSE" "$app_dir/Contents/Resources/LICENSE"
 /usr/bin/install -m 644 "$project_dir/NOTICE.md" "$app_dir/Contents/Resources/NOTICE.md"
+# Ad hoc signatures seal the bundle. Developer ID signing and notarization are
+# separate distribution steps.
 /usr/bin/codesign --force --sign - --timestamp=none "$app_dir"
 /usr/bin/codesign --verify --deep --strict "$app_dir"
 printf '\nBuilt and verified: %s\n' "$app_dir"

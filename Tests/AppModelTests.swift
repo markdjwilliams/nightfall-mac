@@ -11,7 +11,8 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) thr
     if !condition() { throw TestFailure.failed(message) }
 }
 
-/// Blocks only the injected transport, never a real socket, app or service.
+/// Pauses injected responses so tests can edit or queue actions while I/O is in flight.
+/// No real socket is used; each test explicitly releases its expected requests.
 private final class StubService {
     private let lock = NSLock()
     private let started = DispatchSemaphore(value: 0)

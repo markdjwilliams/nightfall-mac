@@ -13,6 +13,8 @@ enum NightfallVersion {
     static let current = "1.1.1"
 }
 
+/// One operation per connection. Identity comes from socket peer credentials.
+/// Session and warning IDs correlate presentation reports; they are not credentials.
 struct ServiceRequest: Codable {
     var command: String
     var sessionID: String?
@@ -22,6 +24,8 @@ struct ServiceRequest: Codable {
     var settings: Settings?
 }
 
+/// The operation's resulting snapshot. An error can coexist with state, so a
+/// returned snapshot alone does not confirm that a requested mutation succeeded.
 struct ServiceResponse: Codable {
     var state: EngineState?
     var nextRun: Date?
@@ -30,6 +34,7 @@ struct ServiceResponse: Codable {
     var dryRun: Bool = false
 }
 
+/// The same date representation is used for service messages and saved state.
 enum Wire {
     static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
@@ -57,6 +62,9 @@ enum SocketError: LocalizedError {
     }
 }
 
+/// A single exchange of newline-delimited JSON on a Unix stream socket. The
+/// payload limit excludes the delimiter. Connect, send, and receive each have a
+/// separate deadline; the timeout is not a budget for the entire round trip.
 enum LocalSocket {
     static let messageLimit = 32_768
     private static let operationTimeout: TimeInterval = 2.5
@@ -73,6 +81,8 @@ enum LocalSocket {
         return value
     }
 
+    /// Required before sending or receiving: suppress broken-pipe signals and
+    /// make I/O nonblocking so readiness checks can enforce their deadlines.
     static func configure(_ fd: Int32) throws {
         var one: Int32 = 1
         guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
@@ -84,8 +94,8 @@ enum LocalSocket {
         }
     }
 
-    /// One monotonic deadline covers every partial read/write, including a peer
-    /// that trickles bytes just before a per-call socket timeout would expire.
+    /// Waits against the caller's fixed monotonic deadline. Partial I/O reuses
+    /// that deadline, so trickled bytes cannot restart a phase's timeout.
     private static func wait(fd: Int32, events: Int16, until deadline: TimeInterval) throws {
         while true {
             let remaining = deadline - ProcessInfo.processInfo.systemUptime
@@ -101,6 +111,7 @@ enum LocalSocket {
         }
     }
 
+    /// Sends one bounded payload and delimiter on an already configured socket.
     static func send(_ data: Data, fd: Int32) throws {
         guard data.count <= messageLimit else { throw SocketError.oversized }
         var payload = data
@@ -118,6 +129,9 @@ enum LocalSocket {
         }
     }
 
+    /// Returns the first complete frame without its newline; EOF before the
+    /// delimiter is an error. Extra frames are ignored because each caller
+    /// closes the connection after one request/response exchange.
     static func receive(fd: Int32) throws -> Data {
         var result = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
@@ -137,6 +151,9 @@ enum LocalSocket {
         throw SocketError.oversized
     }
 
+    /// Performs a synchronous exchange; UI callers must use their transport queue.
+    /// The installed path requires a root peer before any request is sent.
+    /// Explicit diagnostic/test paths also permit non-root dry-run or fake peers.
     static func request(_ request: ServiceRequest, path: String = NightfallPaths.socket) throws -> ServiceResponse {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SocketError.system("Connect", errno) }
@@ -158,7 +175,7 @@ enum LocalSocket {
             }
             guard error == 0 else { throw SocketError.system("Connect", error) }
         }
-        // Production clients accept responses only from the root-owned service.
+        // This checks the peer's UID, not its executable or code signature.
         var uid: uid_t = 0
         var gid: gid_t = 0
         guard getpeereid(fd, &uid, &gid) == 0, uid == 0 || path != NightfallPaths.socket else {
