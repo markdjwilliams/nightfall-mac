@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory(prefix="nightfall-ipc-", dir="/private/tmp") as
     directory = Path(temporary)
     sock = str(directory / "s.sock")
     saved = {
-        "settings": {"enabled": False, "hour": 20, "minute": 30, "warningSeconds": 120, "spokenWarning": True},
+        "settings": {"enabled": False, "hour": 20, "minute": 30, "warningSeconds": 120, "chimeEnabled": False},
         "handledDays": [],
     }
     (directory / "state.json").write_text(json.dumps(saved))

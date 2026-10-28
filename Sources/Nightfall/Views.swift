@@ -64,9 +64,9 @@ struct NightfallView: View {
                     }
                     Divider()
                     HStack {
-                        settingTitle("Say it out loud", detail: "Announce the warning as well as show it")
+                        settingTitle("Gentle chime", detail: "A soft sound when the warning appears")
                         Spacer()
-                        Toggle("Spoken announcement", isOn: Binding(get: { model.draft.spokenWarning }, set: { model.draft.spokenWarning = $0; model.isDirty = true }))
+                        Toggle("Gentle chime", isOn: Binding(get: { model.draft.chimeEnabled }, set: { model.draft.chimeEnabled = $0; model.isDirty = true }))
                             .labelsHidden().toggleStyle(.switch).tint(accent)
                     }
                 }.padding(.horizontal, 4)
@@ -104,10 +104,18 @@ struct NightfallView: View {
                 Text("Everyone gets a say. A new active user gets a fresh countdown. If the warning can’t be shown, Nightfall skips that occurrence.")
                     .font(.system(size: 11)).foregroundStyle(secondaryInk).fixedSize(horizontal: false, vertical: true).lineSpacing(3)
             }
+            if model.installed {
+                HStack {
+                    Spacer()
+                    Button(model.uninstalling ? "Uninstalling…" : "Uninstall Nightfall…") { model.uninstall() }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(secondaryInk)
+                }
+            }
         }
         .padding(30).frame(width: 590, height: 650)
         .background(Color(red: 0.96, green: 0.965, blue: 0.98))
         .preferredColorScheme(.light)
+        .disabled(model.performingMaintenance)
     }
 
     private func settingTitle(_ title: String, detail: String) -> some View {

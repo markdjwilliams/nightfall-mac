@@ -5,15 +5,39 @@ public struct Settings: Codable, Equatable {
     public var hour: Int
     public var minute: Int
     public var warningSeconds: Int
-    public var spokenWarning: Bool
+    public var chimeEnabled: Bool
 
     public init(enabled: Bool = true, hour: Int = 20, minute: Int = 30,
-                warningSeconds: Int = 120, spokenWarning: Bool = true) {
+                warningSeconds: Int = 120, chimeEnabled: Bool = false) {
         self.enabled = enabled
         self.hour = hour
         self.minute = minute
         self.warningSeconds = warningSeconds
-        self.spokenWarning = spokenWarning
+        self.chimeEnabled = chimeEnabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, hour, minute, warningSeconds, chimeEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try values.decode(Bool.self, forKey: .enabled)
+        hour = try values.decode(Int.self, forKey: .hour)
+        minute = try values.decode(Int.self, forKey: .minute)
+        warningSeconds = try values.decode(Int.self, forKey: .warningSeconds)
+        // Legacy spokenWarning is intentionally ignored: a previous speech
+        // preference must never enable the replacement chime automatically.
+        chimeEnabled = try values.decodeIfPresent(Bool.self, forKey: .chimeEnabled) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(enabled, forKey: .enabled)
+        try values.encode(hour, forKey: .hour)
+        try values.encode(minute, forKey: .minute)
+        try values.encode(warningSeconds, forKey: .warningSeconds)
+        try values.encode(chimeEnabled, forKey: .chimeEnabled)
     }
 
     public enum ValidationError: Error, LocalizedError {

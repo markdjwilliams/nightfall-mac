@@ -60,6 +60,8 @@ private enum EngineTests {
     static func main() throws {
         let tests: [(String, () throws -> Void)] = [
             ("defaults and validation", defaultsAndValidation),
+            ("legacy audio settings migrate silently", legacyAudioSettings),
+            ("explicit chime settings roundtrip", chimeSettingsRoundtrip),
             ("configured time is the intended sleep time", intendedSleepTime),
             ("warnings crossing midnight use the target sleep date", midnightWarning),
             ("warning acknowledgment starts full countdown", acknowledgmentCountdown),
@@ -88,8 +90,8 @@ private enum EngineTests {
         let settings = Settings()
         try expect(settings.enabled && settings.hour == 20 && settings.minute == 30,
                    "Default must be enabled at 8:30 p.m.")
-        try expect(settings.warningSeconds == 120 && settings.spokenWarning,
-                   "Default must include a two-minute spoken warning")
+        try expect(settings.warningSeconds == 120 && !settings.chimeEnabled,
+                   "Default must include a two-minute silent warning")
         try settings.validate()
         for invalid in [Settings(hour: -1), Settings(hour: 24), Settings(minute: -1),
                         Settings(minute: 60), Settings(warningSeconds: 29), Settings(warningSeconds: 601)] {
@@ -100,6 +102,49 @@ private enum EngineTests {
         }
         try Settings(hour: 0, minute: 0, warningSeconds: 30).validate()
         try Settings(hour: 23, minute: 59, warningSeconds: 600).validate()
+    }
+
+    static func legacyAudioSettings() throws {
+        let expected = Settings(enabled: false, hour: 21, minute: 15, warningSeconds: 60)
+        let base: [String: Any] = ["enabled": false, "hour": 21, "minute": 15, "warningSeconds": 60]
+        for spoken in [true, false] {
+            var legacy = base
+            legacy["spokenWarning"] = spoken
+            let decoded = try JSONDecoder().decode(Settings.self,
+                from: JSONSerialization.data(withJSONObject: legacy))
+            try expect(decoded == expected,
+                       "Legacy speech set to \(spoken) must preserve schedule settings with the chime off")
+        }
+        let withoutAudio = try JSONDecoder().decode(Settings.self,
+            from: JSONSerialization.data(withJSONObject: base))
+        try expect(withoutAudio == expected, "Missing audio preferences must default to silence")
+
+        for key in ["enabled", "hour", "minute", "warningSeconds"] {
+            var incomplete = base
+            incomplete.removeValue(forKey: key)
+            do {
+                _ = try JSONDecoder().decode(Settings.self,
+                    from: JSONSerialization.data(withJSONObject: incomplete))
+                throw TestFailure(description: "Missing required \(key) was accepted")
+            } catch DecodingError.keyNotFound { }
+        }
+    }
+
+    static func chimeSettingsRoundtrip() throws {
+        for enabled in [true, false] {
+            let settings = Settings(enabled: false, hour: 22, minute: 45,
+                                    warningSeconds: 90, chimeEnabled: enabled)
+            let encoded = try JSONEncoder().encode(settings)
+            let decoded = try JSONDecoder().decode(Settings.self, from: encoded)
+            try expect(decoded == settings, "Explicit chime preference must survive a save and reload")
+            var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+            try expect(object["chimeEnabled"] as? Bool == enabled && object["spokenWarning"] == nil,
+                       "Saved settings must contain only the new audio preference")
+            object["spokenWarning"] = !enabled
+            let mixed = try JSONDecoder().decode(Settings.self,
+                from: JSONSerialization.data(withJSONObject: object))
+            try expect(mixed == settings, "An explicit chime preference must take precedence over legacy speech")
+        }
     }
 
     static func intendedSleepTime() throws {

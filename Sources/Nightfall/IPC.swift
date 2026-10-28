@@ -22,7 +22,7 @@ struct ServiceResponse: Codable {
     var state: EngineState?
     var nextRun: Date?
     var error: String?
-    var version: String = "1.0.0"
+    var version: String = "1.1.0"
     var dryRun: Bool = false
 }
 

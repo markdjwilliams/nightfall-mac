@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import AVFoundation
 import Darwin
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
@@ -9,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var settingsWindow: NSWindow?
     private var warningWindow: NSWindow?
     private var displayedWarningID: String?
-    private let speech = AVSpeechSynthesizer()
+    private var warningSound: NSSound?
     private var instanceLock: Int32 = -1
     private var reopenObserver: NSObjectProtocol?
 
@@ -59,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(.separator())
         add(menu, "About Nightfall", #selector(about))
         if model.connected { add(menu, "Pause daily sleep…", #selector(pauseSchedule)) }
+        if model.installed { add(menu, "Uninstall Nightfall…", #selector(uninstall)) }
         else if !model.installed { add(menu, "Quit Nightfall", #selector(quitUninstalled), key: "q") }
     }
 
@@ -86,9 +86,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func skip() { model.skipTonight() }
     @objc private func preview() { model.preview() }
+    @objc private func uninstall() { model.uninstall() }
     @objc private func about() {
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "Nightfall", .applicationVersion: "1.0.0",
+            .applicationName: "Nightfall", .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.1.0",
             .credits: NSAttributedString(string: "Daily sleep, with a little courtesy.\nBuilt for this Mac.")
         ])
         NSApp.activate(ignoringOtherApps: true)
@@ -117,14 +118,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             warningWindow?.orderOut(nil)
             model.warningWindow = nil
             displayedWarningID = nil
-            speech.stopSpeaking(at: .immediate)
+            warningSound?.stop()
             return
         }
         if model.previewWarning == nil && !model.isCurrentSessionUsable {
             warningWindow?.orderOut(nil)
             model.warningWindow = nil
             displayedWarningID = nil
-            speech.stopSpeaking(at: .immediate)
+            warningSound?.stop()
             return
         }
         guard warning.id != displayedWarningID else { return }
@@ -147,14 +148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         warningWindow?.center()
         NSApp.activate(ignoringOtherApps: true)
         warningWindow?.makeKeyAndOrderFront(nil)
-        NSSound(named: "Glass")?.play()
-        if model.previewWarning != nil || model.state?.settings.spokenWarning == true {
-            let message = model.previewWarning != nil
-                ? "This is a Nightfall preview. Your Mac will stay awake."
-                : "Nightfall. This Mac is scheduled to sleep soon. Choose Skip tonight to keep it awake."
-            let utterance = AVSpeechUtterance(string: message)
-            utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-            speech.speak(utterance)
+        let chimeEnabled = model.previewWarning != nil ? model.draft.chimeEnabled : model.state?.settings.chimeEnabled == true
+        if chimeEnabled {
+            warningSound = NSSound(named: "Glass")
+            warningSound?.volume = 0.5
+            warningSound?.play()
         }
         model.poll()
     }

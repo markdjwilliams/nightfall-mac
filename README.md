@@ -2,7 +2,7 @@
 
 A native menu bar app that gives everyone on this Mac a chance to finish up before its daily sleep.
 
-The default is **sleep at 8:30 p.m. every day**, with a **two-minute countdown** and a spoken announcement starting around 8:28 p.m. The countdown always gives the active user the full warning period, so a late presentation or user switch may delay sleep. **Skip tonight** cancels that occurrence for the entire Mac. Tomorrow’s schedule stays on. The time, warning length, and spoken announcement are configurable.
+The default is **sleep at 8:30 p.m. every day**, with a **two-minute countdown** starting around 8:28 p.m. An optional gentle chime is **off by default**; there are no spoken announcements. The countdown always gives the active user the full warning period, so a late presentation or user switch may delay sleep. **Skip tonight** cancels that occurrence for the entire Mac. Tomorrow’s schedule stays on. The time, warning length, and chime are configurable. Existing speech preferences migrate to sound off.
 
 Nightfall puts the Mac to **sleep**. It does not power it off.
 
@@ -35,6 +35,7 @@ Requires macOS 13 or later and Apple Command Line Tools. No third-party packages
 ./Scripts/build.sh
 ./Tests/run-tests.sh
 python3 Tests/ServiceTests.py
+python3 Tests/UninstallTests.py
 ```
 
 The first Swift build creates a local module cache and can take a few minutes. The build is ad-hoc signed for local use; it is not Developer ID signed or notarized for public distribution.
@@ -61,6 +62,10 @@ Installed files:
 | `/var/run/com.nightfall.mac.sock` | Local IPC socket; no network service |
 
 ## Remove
+
+Choose **Uninstall Nightfall…** in settings or the moon’s menu. Confirm removal for all users, then authorize the standard macOS administrator prompt. The uninstaller stops automatic sleep before removing the app and shared schedule, and closes each user’s menu bar agent.
+
+Or remove it from Terminal:
 
 ```sh
 sudo /Applications/Nightfall.app/Contents/Resources/uninstall.sh
