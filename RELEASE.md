@@ -4,6 +4,7 @@ Mark approved making the repository public on **October 28, 2026**, superseding 
 
 ## Test evidence
 
+- The first 1.1.2 updater attempt on October 29 stopped before replacement because macOS returned a signed-out GUI-session response the installer did not recognize. Beta 2 adds that response to the GUI-only absence checks while retaining stop verification and fatal handling for permission or system-service errors.
 - The first field test on October 28 failed to request scheduled sleep: version 1.1.0 consumed the occurrence when its warning could not be presented while the Mac was idle with sleeping displays. This is a reported failure, not evidence of a completed testing period. Version 1.1.2 addresses that case with independently sampled display/input evidence and a full unattended interval; the installed behavior still needs confirmation.
 - Obtain Mark's report of the two-week test period and resolve any reported problems.
 - Confirm real sleep, one-occurrence cancellation, tomorrow's schedule, multiple logged-in users, user switching, screen locking, full-screen apps, and restart behavior on the destination Mac. Keeping keyboard focus in another application must not cancel a warning that remains usable, visible, not occluded, and on the active desktop; **Skip tonight** must work on the first click in its inactive window. Automated tests and rendered previews do not establish these interactive results.

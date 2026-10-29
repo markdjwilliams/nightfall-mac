@@ -38,10 +38,19 @@ if name == "launchctl":
     if target in state.get("print_errors", {}) and action == "print":
         sys.exit(state["print_errors"][target])
     if action == "print":
+        # A missing GUI parent returns 125 even when querying its agent service.
+        if target.startswith("gui/") and "/".join(target.split("/")[:2]) not in state["domains"]:
+            sys.exit(state.get("missing_gui_error", 125))
         if target in state["loaded"] or target in state["domains"]:
             sys.exit(0)
-        sys.exit(113 if target.count("/") >= 2 or target.startswith("system/") else 112)
+        sys.exit(113)
     if action == "bootout":
+        if target in state.get("logout_during_bootout", []):
+            domain = "/".join(target.split("/")[:2])
+            state["domains"].remove(domain)
+            state["loaded"] = [service for service in state["loaded"] if not service.startswith(domain + "/")]
+            state_file.write_text(json.dumps(state))
+            sys.exit(125)
         if target in state.get("disappears_during_bootout", []):
             state["loaded"].remove(target)
             state_file.write_text(json.dumps(state))
@@ -177,6 +186,52 @@ class UninstallTests(unittest.TestCase):
         result, operations = self.run_fixture("--caller-uid", "501")
         self.assertNotEqual(result.returncode, 0)
         self.assert_nothing_removed(operations)
+
+    def test_logged_out_gui_domains_use_observed_125_status(self):
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["launchctl", "print", "gui/503"], operations)
+        self.assertNotIn(["launchctl", "bootout", "gui/503/com.nightfall.mac.agent"], operations)
+
+    def test_legacy_absent_gui_status_112_remains_supported(self):
+        self.state["missing_gui_error"] = 112
+        result, _ = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gui_inspection_permission_and_unknown_errors_are_fatal(self):
+        for error in (1, 5, 77):
+            with self.subTest(error=error):
+                self.state["print_errors"] = {"gui/503": error}
+                result, operations = self.run_fixture("--caller-uid", "501")
+                self.assertNotEqual(result.returncode, 0)
+                self.assert_nothing_removed(operations)
+
+    def test_system_inspection_status_125_is_fatal(self):
+        self.state["print_errors"] = {DAEMON: 125}
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_nothing_removed(operations)
+
+    def test_logout_during_gui_bootout_is_verified_as_absent(self):
+        self.state["logout_during_bootout"] = [OTHER]
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        bootout = operations.index(["launchctl", "bootout", OTHER])
+        self.assertEqual(operations[bootout + 1], ["launchctl", "print", OTHER])
+
+    def test_gui_bootout_125_does_not_prove_loaded_agent_stopped(self):
+        self.state["bootout_errors"] = {OTHER: 125}
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_nothing_removed(operations)
+        bootout = operations.index(["launchctl", "bootout", OTHER])
+        self.assertEqual(operations[bootout + 1], ["launchctl", "print", OTHER])
+
+    def test_caller_logout_at_final_bootout_is_safe(self):
+        self.state["logout_during_bootout"] = [CALLER]
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(operations[-1], ["launchctl", "bootout", CALLER])
 
     def test_other_network_login_is_stopped_before_removal(self):
         network_agent = "gui/504/com.nightfall.mac.agent"

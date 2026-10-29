@@ -1,6 +1,11 @@
 # Changes
 
-## 1.1.2 beta — October 29, 2026
+## 1.1.2 beta 2 — October 29, 2026
+
+- Handle macOS's signed-out GUI-session response during installation and removal. Keep permission errors and failures inspecting the system service fatal, and still verify that existing jobs have stopped before replacing files.
+- Test the observed signed-out-session response, compatibility with earlier absence responses, and users signing out during maintenance.
+
+## 1.1.2 beta 1 — October 29, 2026
 
 - Address a failed field test in 1.1.0: the Mac was idle with its displays asleep, so the visible-warning requirement consumed the scheduled occurrence without requesting sleep.
 - Allow a full unattended countdown only when the service independently verifies every online display is asleep, no input occurs throughout the warning interval, and the console user remains unchanged. Idle time alone is insufficient while a display is awake.

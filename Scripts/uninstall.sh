@@ -19,7 +19,7 @@ stop_service() {
         if /bin/launchctl bootout "$target" >/dev/null 2>&1; then :
         else
             result=$?
-            [[ "$result" -eq 113 || ( "$target" == gui/* && "$result" -eq 112 ) ]] || fail "Could not stop $target. Nothing has been deleted."
+            [[ "$result" -eq 113 || ( "$target" == gui/* && ( "$result" -eq 112 || "$result" -eq 125 ) ) ]] || fail "Could not stop $target. Nothing has been deleted."
         fi
         if /bin/launchctl print "$target" >/dev/null 2>&1; then
             fail "Service is still registered: $target. Nothing has been deleted."
@@ -29,8 +29,9 @@ stop_service() {
     else
         result=$?
     fi
-    # Missing service = 113; a GUI domain that logged out in the meantime = 112.
-    [[ "$result" -eq 113 || ( "$target" == gui/* && "$result" -eq 112 ) ]] || fail "Could not verify that $target is stopped (error $result). Nothing has been deleted."
+    # Missing service = 113; an absent GUI domain can report 112 or 125.
+    # System-service 125 and permission/unknown errors are not proof of absence.
+    [[ "$result" -eq 113 || ( "$target" == gui/* && ( "$result" -eq 112 || "$result" -eq 125 ) ) ]] || fail "Could not verify that $target is stopped (error $result). Nothing has been deleted."
 }
 
 main() {
@@ -56,7 +57,7 @@ main() {
             gui_uids+=("$uid")
         else
             result=$?
-            [[ "$result" -eq 112 ]] || fail "Could not inspect the login session for user $uid (error $result)."
+            [[ "$result" -eq 112 || "$result" -eq 125 ]] || fail "Could not inspect the login session for user $uid (error $result)."
         fi
     done <<< "$users"
 
@@ -66,7 +67,7 @@ main() {
             caller_loaded=1
         else
             result=$?
-            [[ "$result" -eq 112 || "$result" -eq 113 ]] || fail "Could not inspect Nightfall's menu bar app (error $result)."
+            [[ "$result" -eq 112 || "$result" -eq 113 || "$result" -eq 125 ]] || fail "Could not inspect Nightfall's menu bar app (error $result)."
         fi
     fi
 
@@ -90,7 +91,7 @@ main() {
         if /bin/launchctl bootout "gui/$caller_uid/com.nightfall.mac.agent" >/dev/null 2>&1; then :
         else
             result=$?
-            [[ "$result" -eq 112 || "$result" -eq 113 ]] || fail 'Files were removed, but the current menu bar app could not be stopped. Sign out to close it.'
+            [[ "$result" -eq 112 || "$result" -eq 113 || "$result" -eq 125 ]] || fail 'Files were removed, but the current menu bar app could not be stopped. Sign out to close it.'
         fi
     fi
     printf 'Nightfall, its system services, and its saved schedule have been removed.\n'

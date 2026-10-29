@@ -39,12 +39,22 @@ if name == "launchctl":
     action, target, *rest = args
     if action == "print":
         if target in state.get("print_errors", {}): sys.exit(state["print_errors"][target])
+        # macOS 15 returns 125 for an absent GUI domain, including child queries.
+        if target.startswith("gui/") and "/".join(target.split("/")[:2]) not in state["domains"]:
+            sys.exit(state.get("missing_gui_error", 125))
         if target in state["loaded"] or target in state["domains"]: sys.exit(0)
-        sys.exit(113 if target.count("/") >= 2 or target.startswith("system/") else 112)
+        sys.exit(113)
     if action == "bootout":
+        if target in state.get("logout_during_bootout", []):
+            domain = "/".join(target.split("/")[:2])
+            state["domains"].remove(domain)
+            state["loaded"] = [service for service in state["loaded"] if not service.startswith(domain + "/")]
+            state_file.write_text(json.dumps(state))
+            sys.exit(125)
         if target in state.get("bootout_errors", {}): sys.exit(state["bootout_errors"][target])
         if target not in state.get("stuck", []) and target in state["loaded"]: state["loaded"].remove(target)
     elif action == "bootstrap":
+        if target.startswith("gui/") and target not in state["domains"]: sys.exit(125)
         if target in state.get("bootstrap_errors", {}):
             error = state["bootstrap_errors"].pop(target)
             state_file.write_text(json.dumps(state))
@@ -252,6 +262,49 @@ class InstallerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assert_old_installation()
         self.assertFalse(any(operation[:2] == ["launchctl", "bootout"] for operation in operations))
+
+    def test_logged_out_gui_domains_use_observed_125_status(self):
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["launchctl", "print", "gui/503"], operations)
+        self.assertFalse(any(operation[0] == "launchctl" and operation[1] in ("bootout", "bootstrap")
+                             and operation[2].startswith("gui/503") for operation in operations))
+
+    def test_legacy_absent_gui_status_112_remains_supported(self):
+        self.state["missing_gui_error"] = 112
+        result, _ = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gui_inspection_permission_and_unknown_errors_are_fatal(self):
+        for error in (1, 5, 77):
+            with self.subTest(error=error):
+                self.state["print_errors"] = {"gui/503": error}
+                result, operations = self.run_fixture("--caller-uid", "501")
+                self.assertNotEqual(result.returncode, 0)
+                self.assert_old_installation()
+                self.assertFalse(any(operation[:2] == ["launchctl", "bootout"] for operation in operations))
+
+    def test_system_inspection_status_125_is_fatal(self):
+        self.state["print_errors"] = {DAEMON: 125}
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_old_installation()
+        self.assertFalse(any(operation[:2] == ["launchctl", "bootout"] for operation in operations))
+
+    def test_logout_during_gui_bootout_is_verified_as_absent(self):
+        self.state["logout_during_bootout"] = [OTHER]
+        result, _ = self.run_fixture("--caller-uid", "501")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        final_state = json.loads((self.root / "mock-state.json").read_text())
+        self.assertNotIn(OTHER, final_state["loaded"])
+
+    def test_gui_bootout_125_does_not_prove_loaded_agent_stopped(self):
+        self.state["bootout_errors"] = {OTHER: 125}
+        result, operations = self.run_fixture("--caller-uid", "501")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_old_installation()
+        bootout = operations.index(["launchctl", "bootout", OTHER])
+        self.assertEqual(operations[bootout + 1], ["launchctl", "print", OTHER])
 
     def test_network_account_caller_is_restarted(self):
         network_caller = "gui/504/com.nightfall.mac.agent"

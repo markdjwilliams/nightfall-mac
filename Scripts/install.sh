@@ -11,19 +11,20 @@ valid_uid() { [[ "$1" =~ ^[0-9]{3,10}$ ]] && (( 10#$1 >= 500 && 10#$1 <= 4294967
 
 # Missing jobs and users who signed out are safe. Other inspection failures must
 # not be mistaken for a stopped service while replacing its executable.
-# launchctl uses 113 for a missing service and 112 for a missing GUI domain.
+# Missing services report 113. An absent GUI domain can report 112 or 125;
+# 125 is accepted only for GUI targets, never the system service.
 stop_service() {
     local target="$1" result
     if /bin/launchctl print "$target" >/dev/null 2>&1; then
         if /bin/launchctl bootout "$target" >/dev/null 2>&1; then :
         else
             result=$?
-            [[ "$result" -eq 113 || ( "$target" == gui/* && "$result" -eq 112 ) ]] || return "$result"
+            [[ "$result" -eq 113 || ( "$target" == gui/* && ( "$result" -eq 112 || "$result" -eq 125 ) ) ]] || return "$result"
         fi
         if /bin/launchctl print "$target" >/dev/null 2>&1; then return 1
         else result=$?; fi
     else result=$?; fi
-    [[ "$result" -eq 113 || ( "$target" == gui/* && "$result" -eq 112 ) ]]
+    [[ "$result" -eq 113 || ( "$target" == gui/* && ( "$result" -eq 112 || "$result" -eq 125 ) ) ]]
 }
 
 [[ "$EUID" -eq 0 ]] || fail 'Administrator authorization is required.'
@@ -93,11 +94,11 @@ while IFS= read -r uid; do
             if [[ "$uid" == "$caller_uid" ]]; then caller_was_loaded=1; fi
         else
             result=$?
-            [[ "$result" -eq 112 || "$result" -eq 113 ]] || fail "Could not inspect Nightfall for user $uid (error $result)."
+            [[ "$result" -eq 112 || "$result" -eq 113 || "$result" -eq 125 ]] || fail "Could not inspect Nightfall for user $uid (error $result)."
         fi
     else
         result=$?
-        [[ "$result" -eq 112 ]] || fail "Could not inspect the login session for user $uid (error $result)."
+        [[ "$result" -eq 112 || "$result" -eq 125 ]] || fail "Could not inspect the login session for user $uid (error $result)."
     fi
 done <<< "$users"
 if /bin/launchctl print "system/$daemon_label" >/dev/null 2>&1; then daemon_was_loaded=1
