@@ -102,7 +102,7 @@ struct NightfallView: View {
             Spacer(minLength: 0)
             HStack(alignment: .top, spacing: 9) {
                 Image(systemName: "person.2.fill").font(.system(size: 14)).foregroundStyle(accent)
-                Text("Everyone gets a say. A new active user gets a fresh countdown. If the warning can’t be shown, Nightfall skips that occurrence.")
+                Text("Everyone gets a say. A new active user gets a fresh countdown. Before sleeping unattended, Nightfall checks that all screens stay asleep and the Mac stays idle.")
                     .font(.system(size: 11)).foregroundStyle(secondaryInk).fixedSize(horizontal: false, vertical: true).lineSpacing(3)
             }
             if model.installed {

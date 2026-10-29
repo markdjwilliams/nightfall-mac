@@ -1,5 +1,9 @@
 # Changes
 
+## 1.1.2 beta 3 — October 29, 2026
+
+- Update the settings footer and README screenshot to explain the display and activity checks used before unattended sleep.
+
 ## 1.1.2 beta 2 — October 29, 2026
 
 - Handle macOS's signed-out GUI-session response during installation and removal. Keep permission errors and failures inspecting the system service fatal, and still verify that existing jobs have stopped before replacing files.
