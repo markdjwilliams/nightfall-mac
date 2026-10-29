@@ -10,7 +10,7 @@ Nightfall puts the Mac to **sleep**. It does not power it off.
 
 ## Install
 
-Requires **macOS 13 or later**. The current download is **1.1.2 beta 2**, with apps for Intel and Apple Silicon. The Apple Silicon app is cross-built and signature-checked; Apple Silicon hardware has not yet been tested. See the [changes](CHANGELOG.md) for fixes in this beta.
+Requires **macOS 13 or later**. The current download is **1.1.2 beta 3**, with apps for Intel and Apple Silicon. The Apple Silicon app is cross-built and signature-checked; Apple Silicon hardware has not yet been tested. See the [changes](CHANGELOG.md) for fixes in this beta.
 
 The ready-made app archive is stored with **Git LFS**. This is an early beta; testing is ongoing.
 
@@ -18,8 +18,8 @@ Choose the app for your Mac:
 
 | Processor | App archive | SHA-256 |
 | --- | --- | --- |
-| Intel | [Nightfall-1.1.2-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/c5ca30a120b1efe478b1776e7270b6826af7c038/Downloads/v1.1.2-beta.2/Nightfall-1.1.2-x86_64.zip) | [Checksum](https://github.com/markdjwilliams/nightfall-mac/blob/c5ca30a120b1efe478b1776e7270b6826af7c038/Downloads/v1.1.2-beta.2/Nightfall-1.1.2-x86_64.zip.sha256) |
-| Apple Silicon (M-series) | [Nightfall-1.1.2-arm64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/c5ca30a120b1efe478b1776e7270b6826af7c038/Downloads/v1.1.2-beta.2/Nightfall-1.1.2-arm64.zip) | [Checksum](https://github.com/markdjwilliams/nightfall-mac/blob/c5ca30a120b1efe478b1776e7270b6826af7c038/Downloads/v1.1.2-beta.2/Nightfall-1.1.2-arm64.zip.sha256) |
+| Intel | [Nightfall-1.1.2-x86_64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/74af41925e5c99978f9534d39219a50702e5f16a/Downloads/v1.1.2-beta.3/Nightfall-1.1.2-x86_64.zip) | [Checksum](https://github.com/markdjwilliams/nightfall-mac/blob/74af41925e5c99978f9534d39219a50702e5f16a/Downloads/v1.1.2-beta.3/Nightfall-1.1.2-x86_64.zip.sha256) |
+| Apple Silicon (M-series) | [Nightfall-1.1.2-arm64.zip](https://github.com/markdjwilliams/nightfall-mac/blob/74af41925e5c99978f9534d39219a50702e5f16a/Downloads/v1.1.2-beta.3/Nightfall-1.1.2-arm64.zip) | [Checksum](https://github.com/markdjwilliams/nightfall-mac/blob/74af41925e5c99978f9534d39219a50702e5f16a/Downloads/v1.1.2-beta.3/Nightfall-1.1.2-arm64.zip.sha256) |
 
 1. Open your app archive link above, then choose **Download raw file**.
 2. Unzip it, then open the extracted **Nightfall.app**.
