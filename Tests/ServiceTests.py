@@ -7,6 +7,7 @@ desktop warning visibility, user-switch behavior, or actual hardware sleep.
 """
 from concurrent.futures import ThreadPoolExecutor
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -76,6 +77,14 @@ with tempfile.TemporaryDirectory(prefix="nightfall-ipc-", dir="/private/tmp") as
         status = request({"command": "status"})
         assert status["dryRun"] is True
         assert status["state"]["settings"]["enabled"] is False
+        evidence = status.get("systemPresence")
+        if evidence is not None:
+            assert isinstance(evidence["displaysAsleep"], bool)
+            assert math.isfinite(evidence["idleSeconds"]) and evidence["idleSeconds"] >= 0
+        client_status = subprocess.run([str(binary), "--status", "--socket", sock],
+                                       capture_output=True, text=True, timeout=5)
+        assert client_status.returncode == 0, client_status.stderr
+        assert json.loads(client_status.stdout)["dryRun"] is True
         settings = dict(saved["settings"], hour=21, minute=15, warningSeconds=60)
         updated = request({"command": "settings", "settings": settings})
         assert updated["state"]["settings"] == settings

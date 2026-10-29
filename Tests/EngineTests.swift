@@ -78,6 +78,13 @@ private enum EngineTests {
             ("settings changes cancel and invalid settings do not mutate", settingsChanges),
             ("clock rollback and persisted day history", clockRollback),
             ("wall-clock adjustments cannot shorten a visible warning", monotonicCountdown),
+            ("unattended dark Mac receives the full sleep countdown", unattendedCountdown),
+            ("unattended sleep requires independent valid evidence", unattendedEvidence),
+            ("returning users receive a full visible countdown", unattendedReturningUser),
+            ("visible warnings can begin a full unattended interval", interactiveToUnattended),
+            ("revoked unattended mode needs a new full interval", unattendedRevocation),
+            ("unattended pauses and clock changes fail safely", unattendedClockSafety),
+            ("unattended state is durable and legacy-compatible", unattendedPersistence),
             ("daylight saving calendar behavior", daylightSaving),
             ("failure outcome preserves consumption", failureOutcome)
         ]
@@ -527,6 +534,321 @@ private enum EngineTests {
         }
         try expect(normal.state.lastOutcome?.message == "Requested scheduled sleep.",
                    "Normal elapsed timing must remain functional")
+    }
+
+    private static func beginUnattended(uid: UInt32? = 501, settings: Settings = Settings(warningSeconds: 30))
+        throws -> (ScheduleEngine, String, Date) {
+        let start = warningDate(warningSeconds: settings.warningSeconds)
+        let e = ScheduleEngine(state: EngineState(settings: settings), now: start.addingTimeInterval(-1),
+                               calendar: vancouver, uptime: 99)
+        try expect(!e.tick(now: start, consoleUID: uid, presence: nil, uptime: 100,
+                           systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                   "Entering unattended mode must not immediately approve sleep")
+        guard let pending = e.state.pending else { throw TestFailure(description: "Expected unattended warning") }
+        try expect(pending.unattendedSince == start && !pending.presented,
+                   "Dark, independently idle displays must enter the unattended countdown")
+        return (e, pending.id, start)
+    }
+
+    static func unattendedCountdown() throws {
+        for owner: UInt32? in [501, nil] {
+            let (e, _, start) = try beginUnattended(uid: owner, settings: Settings())
+            try expect(e.state.handledDays.contains("2026-10-28"),
+                       "An unattended occurrence must be consumed before a power request")
+            for second in 1...120 {
+                let now = start.addingTimeInterval(Double(second))
+                let requested = e.tick(now: now, consoleUID: owner, presence: nil,
+                                       uptime: 100 + Double(second),
+                                       systemPresence: SystemPresence(displaysAsleep: true,
+                                                                      idleSeconds: 600 + Double(second)))
+                try expect(requested == (second == 120),
+                           "A stable unattended Mac must get the full two-minute countdown")
+            }
+            try expect(e.state.pending == nil && e.state.lastOutcome?.message == "Requested scheduled sleep.",
+                       "Unattended sleep must clear pending state before approving power")
+            let later = start.addingTimeInterval(121)
+            try expect(!e.tick(now: later, consoleUID: owner, presence: nil, uptime: 221,
+                               systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 721)),
+                       "An unattended occurrence must never repeat")
+        }
+    }
+
+    static func unattendedEvidence() throws {
+        let invalid: [SystemPresence?] = [nil, SystemPresence(displaysAsleep: false, idleSeconds: 600),
+            SystemPresence(displaysAsleep: true, idleSeconds: -1),
+            SystemPresence(displaysAsleep: true, idleSeconds: .infinity),
+            SystemPresence(displaysAsleep: true, idleSeconds: .nan)]
+        let start = warningDate()
+        for evidence in invalid {
+            let e = ScheduleEngine(state: EngineState(settings: Settings(warningSeconds: 30)),
+                                   now: start.addingTimeInterval(-1), calendar: vancouver, uptime: 99)
+            for second in 0...11 {
+                let now = start.addingTimeInterval(Double(second))
+                try expect(!e.tick(now: now, consoleUID: 501, presence: nil,
+                                   uptime: 100 + Double(second), systemPresence: evidence),
+                           "Awake, missing, or invalid system evidence cannot approve silent sleep")
+            }
+            try expect(e.state.pending == nil, "An actively used or unknown desktop must still fail closed")
+        }
+        for uptime: TimeInterval? in [nil, -1, .nan, .infinity] {
+            let e = engine()
+            try expect(!e.tick(now: start, consoleUID: 501, presence: nil, uptime: uptime,
+                               systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                       "Invalid monotonic time cannot approve unattended sleep")
+            try expect(e.state.pending?.unattendedSince == nil,
+                       "Unattended entry requires a valid monotonic clock")
+        }
+        let dark = SystemPresence(displaysAsleep: true, idleSeconds: 120)
+        try expect(dark.supportsUnattendedInterval(120) && !dark.supportsUnattendedInterval(121) &&
+                   !dark.supportsUnattendedInterval(-1) && !dark.supportsUnattendedInterval(.nan),
+                   "The shared final gate must require valid idle evidence for the whole interval")
+
+        // No recent input can mean someone is reading or watching a video. An
+        // awake display still requires a visible warning, even with a healthy app.
+        let awake = SystemPresence(displaysAsleep: false, idleSeconds: 600)
+        let unseen = engine()
+        for second in 0...11 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(!unseen.tick(now: now, consoleUID: 501, presence: agent(now),
+                                   uptime: 100 + Double(second), systemPresence: awake),
+                       "An awake idle desktop with an unseen warning must never approve silent sleep")
+        }
+        try expect(unseen.state.pending == nil &&
+                   unseen.state.lastOutcome?.message.contains("could not see") == true,
+                   "A fresh usable app without visible presentation must fail closed on an awake desktop")
+
+        let visible = engine()
+        try expect(!visible.tick(now: start, consoleUID: 501, presence: agent(start), uptime: 100,
+                                 systemPresence: awake),
+                   "An awake idle desktop must start with a visible warning")
+        let id = visible.state.pending!.id
+        try expect(visible.state.pending?.unattendedSince == nil,
+                   "Input idleness alone must never select unattended mode")
+        for second in 1...31 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(visible.tick(now: now, consoleUID: 501, presence: agent(now, visible: id),
+                                    uptime: 100 + Double(second), systemPresence: awake) == (second == 31),
+                       "An awake idle desktop with acknowledged presentation must receive its full countdown")
+        }
+    }
+
+    static func unattendedReturningUser() throws {
+        for kind in ["display-woke", "input", "owner-changed", "owner-lost", "owner-gained"] {
+            let initialOwner: UInt32? = kind == "owner-gained" ? nil : 501
+            let (e, id, start) = try beginUnattended(uid: initialOwner)
+            for second in 1...29 {
+                let now = start.addingTimeInterval(Double(second))
+                try expect(!e.tick(now: now, consoleUID: initialOwner, presence: nil,
+                                   uptime: 100 + Double(second),
+                                   systemPresence: SystemPresence(displaysAsleep: true,
+                                                                  idleSeconds: 600 + Double(second))),
+                           "Unattended mode must not sleep early")
+            }
+            let owner: UInt32? = kind == "owner-lost" ? nil : (kind == "owner-changed" ? 502 : 501)
+            let now = start.addingTimeInterval(30)
+            let evidence = SystemPresence(displaysAsleep: kind != "display-woke",
+                                          idleSeconds: kind == "input" ? 0 : 630)
+            let presence = owner.map { agent(now, uid: $0, session: "returning-user") }
+            try expect(!e.tick(now: now, consoleUID: owner, presence: presence, uptime: 130,
+                               systemPresence: evidence),
+                       "Wake, input, or a console change at the deadline must revoke unattended sleep")
+            try expect(e.state.pending?.unattendedSince == nil &&
+                       e.state.pending?.awaitingSince == now &&
+                       e.state.pending?.deadline == now.addingTimeInterval(30),
+                       "A returning user must receive fresh presentation grace and a full countdown")
+            if let owner {
+                for second in 31...61 {
+                    let visibleAt = start.addingTimeInterval(Double(second))
+                    try expect(e.tick(now: visibleAt, consoleUID: owner,
+                                      presence: agent(visibleAt, uid: owner, session: "returning-user", visible: id),
+                                      uptime: 100 + Double(second),
+                                      systemPresence: SystemPresence(displaysAsleep: false, idleSeconds: 0)) == (second == 61),
+                               "A returning user's acknowledged warning must run for the full interval")
+                }
+            } else {
+                let later = now.addingTimeInterval(11)
+                try expect(!e.tick(now: later, consoleUID: nil, presence: nil, uptime: 141,
+                                   systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 641)),
+                           "A changed console with no visible warning cannot approve sleep")
+                try expect(e.state.pending == nil, "An unavailable returning session must eventually skip")
+            }
+        }
+    }
+
+    static func interactiveToUnattended() throws {
+        let start = warningDate()
+        let e = ScheduleEngine(state: EngineState(settings: Settings(warningSeconds: 30)),
+                               now: start.addingTimeInterval(-1), calendar: vancouver, uptime: 99)
+        let awake = SystemPresence(displaysAsleep: false, idleSeconds: 600)
+        try expect(!e.tick(now: start, consoleUID: 501, presence: agent(start), uptime: 100,
+                           systemPresence: awake), "An awake desktop begins with an interactive warning")
+        let id = e.state.pending!.id
+        for second in 1...29 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(!e.tick(now: now, consoleUID: 501, presence: agent(now, visible: id),
+                               uptime: 100 + Double(second), systemPresence: awake),
+                       "The visible interval must not finish early")
+        }
+        let darkAt = start.addingTimeInterval(30)
+        try expect(!e.tick(now: darkAt, consoleUID: 501, presence: nil, uptime: 130,
+                           systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 0)),
+                   "Darkness near the visible deadline must start a new interval, not approve sleep")
+        try expect(e.state.pending?.unattendedSince == darkAt && !e.state.pending!.presented &&
+                   e.state.pending?.deadline == darkAt.addingTimeInterval(30),
+                   "A new unattended interval must discard all prior visible countdown time")
+        for second in 31...60 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(e.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
+                              systemPresence: SystemPresence(displaysAsleep: true,
+                                                             idleSeconds: Double(second - 30))) == (second == 60),
+                       "An interactive-to-unattended transition must receive the full independent interval")
+        }
+
+        let unseen = ScheduleEngine(state: EngineState(settings: Settings(warningSeconds: 30)),
+                                    now: start.addingTimeInterval(-1), calendar: vancouver, uptime: 99)
+        _ = unseen.tick(now: start, consoleUID: 501, presence: nil, uptime: 100, systemPresence: awake)
+        let withinGrace = start.addingTimeInterval(5)
+        try expect(!unseen.tick(now: withinGrace, consoleUID: 501, presence: nil, uptime: 105,
+                                systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                   "Darkness within an unseen warning's grace must not immediately approve sleep")
+        try expect(unseen.state.pending?.unattendedSince == withinGrace &&
+                   unseen.state.pending?.deadline == withinGrace.addingTimeInterval(30),
+                   "An unseen pending warning may start a new full interval before grace expires")
+
+        let expired = engine()
+        _ = try trigger(expired)
+        for second in 11...45 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(!expired.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
+                                     systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                       "Darkness after presentation grace must not revive an expired occurrence")
+        }
+        try expect(expired.state.pending == nil && expired.state.handledDays.contains("2026-10-28"),
+                   "An expired interactive occurrence must stay consumed")
+    }
+
+    static func unattendedRevocation() throws {
+        for kind in ["unknown-system", "missing-uptime", "input"] {
+            let (e, _, start) = try beginUnattended()
+            let change = start.addingTimeInterval(1)
+            let sample: SystemPresence? = kind == "unknown-system" ? nil :
+                SystemPresence(displaysAsleep: true, idleSeconds: kind == "input" ? 0 : 601)
+            try expect(!e.tick(now: change, consoleUID: 501, presence: nil,
+                               uptime: kind == "missing-uptime" ? nil : 101, systemPresence: sample),
+                       "Uncertain or changed evidence must revoke unattended authorization")
+            try expect(e.state.pending?.unattendedSince == nil, "Revoked authorization must be cleared")
+            let reenteredAt = start.addingTimeInterval(2)
+            for second in 2...32 {
+                let now = start.addingTimeInterval(Double(second))
+                try expect(e.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
+                                  systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 700)) == (second == 32),
+                           "Renewed darkness must observe a full new interval after revocation")
+                if second == 2 {
+                    try expect(e.state.pending?.unattendedSince == reenteredAt &&
+                               e.state.pending?.deadline == reenteredAt.addingTimeInterval(30),
+                               "Reentry must discard the revoked interval's start and deadline")
+                }
+            }
+            try expect(e.state.pending == nil && e.state.lastOutcome?.message == "Requested scheduled sleep.",
+                       "A complete new unattended interval can finish the pending occurrence")
+        }
+
+        let (woke, _, start) = try beginUnattended()
+        for second in 1...29 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(!woke.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
+                                  systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                       "The original dark interval must not finish early")
+        }
+        try expect(!woke.tick(now: start.addingTimeInterval(30), consoleUID: 501, presence: nil, uptime: 130,
+                              systemPresence: SystemPresence(displaysAsleep: false, idleSeconds: 0)),
+                   "A display waking at the deadline must revoke the original interval")
+        let darkAgain = start.addingTimeInterval(31)
+        for second in 31...61 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(woke.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
+                                 systemPresence: SystemPresence(displaysAsleep: true,
+                                                                idleSeconds: Double(second - 31))) == (second == 61),
+                       "A dark-wake-dark sequence must never inherit the first dark interval")
+            if second == 31 {
+                try expect(woke.state.pending?.unattendedSince == darkAgain &&
+                           woke.state.pending?.deadline == darkAgain.addingTimeInterval(30),
+                           "Returning darkness starts from its own current timestamp")
+            }
+        }
+    }
+
+    static func unattendedClockSafety() throws {
+        for kind in ["pause", "forward-clock", "backward-clock", "invalid-uptime"] {
+            let (e, _, start) = try beginUnattended()
+            let elapsed = kind == "pause" ? 31.0 : (kind == "backward-clock" ? -1.0 : 5.0)
+            let now = start.addingTimeInterval(elapsed)
+            let uptime = kind == "invalid-uptime" ? .infinity : (kind == "pause" ? 131 : 101.0)
+            try expect(!e.tick(now: now, consoleUID: 501, presence: nil, uptime: uptime,
+                               systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 700)),
+                       "A pause or clock anomaly must never approve unattended sleep")
+            try expect(e.state.pending == nil, "Interrupted unattended observation must consume the occurrence")
+        }
+        let (e, _, start) = try beginUnattended()
+        // A subsecond wall correction is tolerated, but actual elapsed time must
+        // still cover the whole warning before unattended sleep is approved.
+        for second in 1...29 {
+            let now = start.addingTimeInterval(Double(second) + 0.8)
+            try expect(!e.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
+                               systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600 + Double(second))),
+                       "Small wall corrections cannot shorten the monotonic unattended interval")
+        }
+        let early = start.addingTimeInterval(30)
+        try expect(!e.tick(now: early, consoleUID: 501, presence: nil, uptime: 129.2,
+                           systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 629.2)),
+                   "Reaching the wall-clock deadline alone must not approve unattended sleep")
+        try expect(e.tick(now: start.addingTimeInterval(30.8), consoleUID: 501, presence: nil, uptime: 130,
+                          systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 630)),
+                   "A full independently idle monotonic interval may finish normally")
+    }
+
+    static func unattendedPersistence() throws {
+        let (e, id, start) = try beginUnattended()
+        let encoded = try JSONEncoder().encode(e.state)
+        let saved = try JSONDecoder().decode(EngineState.self, from: encoded)
+        try expect(saved.pending?.unattendedSince == start, "Unattended mode must survive state encoding")
+        let restart = ScheduleEngine(state: saved, now: start.addingTimeInterval(1), calendar: vancouver, uptime: 101)
+        try expect(restart.state.pending == nil && restart.state.handledDays.contains("2026-10-28"),
+                   "A restart must consume an unattended warning rather than resume it")
+        var legacy = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+        var pending = legacy["pending"] as! [String: Any]
+        pending.removeValue(forKey: "unattendedSince")
+        legacy["pending"] = pending
+        let oldState = try JSONDecoder().decode(EngineState.self,
+            from: JSONSerialization.data(withJSONObject: legacy))
+        try expect(oldState.pending?.unattendedSince == nil, "Older persisted warnings must decode safely")
+        let roundtrip = try JSONDecoder().decode(SystemPresence.self,
+            from: JSONEncoder().encode(SystemPresence(displaysAsleep: true, idleSeconds: 120)))
+        try expect(roundtrip == SystemPresence(displaysAsleep: true, idleSeconds: 120),
+                   "System evidence must support diagnostic status encoding")
+
+        e.cancelWarning(id: id, now: start.addingTimeInterval(1))
+        try expect(e.state.pending == nil && e.state.lastOutcome?.day == "2026-10-28",
+                   "A specific cancellation must consume an unattended occurrence too")
+        let (skipped, _, skipStart) = try beginUnattended()
+        skipped.skipTonight(now: skipStart.addingTimeInterval(1))
+        try expect(skipped.state.pending == nil && skipped.state.lastOutcome?.day == "2026-10-28",
+                   "Skip must target the pending unattended occurrence")
+        for second in 2...40 {
+            let now = start.addingTimeInterval(Double(second))
+            for cleared in [e, skipped] {
+                try expect(!cleared.tick(now: now, consoleUID: 501, presence: nil,
+                                        uptime: 100 + Double(second),
+                                        systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                           "New darkness must not revive a canceled or skipped occurrence")
+                try expect(cleared.state.pending == nil,
+                           "Canceled and skipped occurrences stay consumed after potential reentry")
+            }
+        }
+        let (changed, _, changeStart) = try beginUnattended()
+        try changed.updateSettings(Settings(hour: 21, warningSeconds: 30), now: changeStart.addingTimeInterval(1))
+        try expect(changed.state.pending == nil && changed.state.lastOutcome?.day == "2026-10-28",
+                   "Settings changes must cancel an unattended countdown without reopening its date")
     }
 
     static func daylightSaving() throws {

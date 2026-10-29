@@ -38,9 +38,12 @@ The installer adds one system service and one agent for every graphical login. I
 
 ## Courtesy and safety
 
-- The countdown starts only after the active user’s app reports that its warning is visible and can receive input.
+- With a display awake, the countdown starts only after the active user’s app reports that its warning is visible and can receive input. Being idle while reading or watching a video does not bypass this requirement.
+- If every online display is asleep while the occurrence is still pending and within its presentation grace period, the service can start a full unattended countdown without waking the displays. It must independently verify sleeping displays, no input throughout the full interval, an unchanged console user, and uninterrupted monotonic elapsed time before requesting sleep.
+- A display waking, new input, a console-user change, or an unknown system reading ends that unattended countdown. A returning user receives a fresh, full visible warning. If the displays later sleep again while the occurrence remains eligible, the service may start another full unattended interval; elapsed time from earlier visible or unattended countdowns never carries over. A skipped or cleared occurrence cannot return.
 - A different active user gets a fresh, full countdown. Cancellation applies to everyone.
-- A hidden, locked, switched-out, missing, or disconnected warning cannot approve sleep. Uncertain presentation is given a short grace period, then the occurrence is skipped. If you switch to another application during the warning, it loses input focus; the timer restarts if you return promptly, or skips after ten seconds.
+- Working in another application does not cancel the countdown if the warning remains usable, visible, not occluded, and on the current desktop. **Skip tonight** accepts the first click even when the warning window is inactive.
+- In the visible-warning mode, a hidden, locked, switched-out, missing, or disconnected warning cannot approve sleep. It has a ten-second grace period to become usable or enter a newly verified full unattended interval; otherwise the occurrence is skipped. Regaining a usable warning requires a fresh, full visible countdown.
 - A service restart during a warning consumes the occurrence safely. A long pause or wake after a missed scheduled time does not cause immediate sleep. No timer wakes the Mac for this app.
 - Processed calendar dates are saved before a power request, preventing repeated attempts after restart, clock rollback, or a cancelled warning. A failed sleep request is recorded and is not retried that day.
 - Storage failures suspend power requests. No forced shutdown, private lock-screen API, Accessibility permission, or Screen Recording permission is used.
@@ -65,6 +68,7 @@ To run the automated checks:
 ```sh
 ./Tests/run-tests.sh
 ./Tests/run-model-tests.sh
+./Tests/run-system-tests.sh
 python3 Tests/ServiceTests.py
 python3 Tests/InstallerTests.py
 python3 Tests/UninstallTests.py
@@ -79,7 +83,7 @@ To build a downloadable app archive and checksum, run `./Scripts/package.sh`. It
 
 Open [Build Nightfall (manual)](https://github.com/markdjwilliams/nightfall-mac/actions/workflows/build.yml), choose **Run workflow**, and use the `main` branch. Leave **Also cross-build the Apple Silicon app** checked to get both processor versions. After a successful run, download **Nightfall-apps** from its **Artifacts** section. Unzip that download, then unzip the app archive for your Mac: `x86_64` for Intel or `arm64` for Apple Silicon. The app archives preserve executable permissions and signatures inside the outer Actions download.
 
-The workflow runs scheduling and app-model tests, isolated installer/uninstaller tests and the Intel service tests with power actions disabled. By default, it builds and verifies both app archives on one standard Intel Mac runner. Apple Silicon is cross-built and signature-checked; this does not establish behavior on Apple Silicon hardware. Builds are ad hoc signed and are not notarized.
+The workflow runs scheduling, app-model and system-presence probe tests, isolated installer/uninstaller tests and the Intel service tests with power actions disabled. By default, it builds and verifies both app archives on one standard Intel Mac runner. Apple Silicon is cross-built and signature-checked; this does not establish behavior on Apple Silicon hardware. Builds are ad hoc signed and are not notarized.
 
 Builds are **manual only**. Pushes, pull requests, tags and schedules do not trigger builds. Each requested run uses one Mac runner with a **15-minute cutoff**; a new request cancels an older active run. Downloads expire after **seven days**. The checkout skips Git LFS downloads, and the workflow uses no caches, extra credentials, repository writes or automatic release publishing. Published app archives remain in Git LFS; Actions downloads are temporary build outputs.
 
@@ -87,15 +91,23 @@ Standard GitHub-hosted Actions runners are free for public repositories. Git LFS
 
 ## Testing
 
-Core tests cover scheduling, cancellation, presentation, multiple users, stale agents, restarts, wake gaps, daylight-saving changes, and clock changes. The service test uses the real socket and persistence with **power actions disabled**. It never sleeps the Mac. Installer and uninstaller tests use temporary files and simulated system services, including stop failures, upgrade rollback, and safe restart ordering; they do not alter the installed app.
+Core tests cover scheduling, cancellation, presentation, multiple users, stale agents, restarts, wake gaps, daylight-saving changes, and clock changes. They also simulate unattended intervals, returning input or display wake, user changes, unknown evidence, and transitions that restart the full visible or unattended interval without inheriting elapsed time. A skipped or cleared occurrence stays consumed. The system-presence tests inject probe results and failures; they do not establish what the installed root service will observe on particular display hardware.
 
-For manual checks, use **Preview warning** first. Then verify a real countdown with the Mac in use, another signed-in user, user switching, full-screen apps, screen locking, and an app restart. Save work before allowing a real countdown to complete. These interactive conditions and actual hardware sleep need testing on the destination Mac; automated simulations cannot establish their behavior.
+The service test uses the real socket and persistence with **power actions disabled**. It never sleeps the Mac. Installer and uninstaller tests use temporary files and simulated system services, including stop failures, upgrade rollback, and safe restart ordering; they do not alter the installed app.
+
+For manual checks, use **Preview warning** first. Then verify a real countdown with the Mac in use, another signed-in user, user switching, full-screen apps, screen locking, and an app restart. Switch focus to another application while keeping the warning visible, and confirm that **Skip tonight** works on the first click in the inactive window.
+
+Also verify the installed root service with all displays asleep for the whole interval, returning partway through, waking one of several displays, and switching users while an unattended interval is pending. Let the displays sleep again before presentation grace expires and confirm a new full unattended interval starts without credit for earlier elapsed time. Repeat after an occurrence has been skipped and confirm it stays skipped. Reading or video with an awake display must still require the visible warning. Save work before allowing a real countdown to complete. These interactive conditions, real display/input readings, and actual hardware sleep need testing on the destination Mac; automated simulations cannot establish their behavior.
 
 ## Design
 
 `Sources/NightfallCore` contains a deterministic Foundation scheduling state machine. `Sources/Nightfall` contains the AppKit/SwiftUI menu bar interface, per-user presentation, a root service, and a small authenticated local-socket protocol.
 
-The daemon checks the current console UID independently and checks the socket client’s UID with `getpeereid`. Presentation acknowledgments are bound to the agent session and warning ID. Before sleeping, the service saves the consumed occurrence and checks the console user and heartbeat again. Its interface accepts a bounded set of schedule, status, and cancellation messages; it does not execute caller-supplied commands or paths.
+The daemon checks the current console UID independently and checks the socket client’s UID with `getpeereid`. Presentation acknowledgments are bound to the agent session and warning ID; keyboard focus alone is not required if the warning remains visible, usable, and on the active desktop. The service also obtains display-sleep and input-idle evidence directly from macOS; agents cannot claim this evidence through the socket.
+
+While a warning is pending and within the applicable presentation grace period, independently verified sleeping displays and valid idle evidence may begin or restart unattended authorization. Every entry starts a new full monotonic warning interval with no credit from earlier countdowns. It requires valid system samples, no intervening input, and an unchanged console user throughout that interval. Display wake, input, owner changes, or unknown readings end it and require a fresh visible-warning acknowledgment for an awake user. Later darkness may start another full unattended interval only while the occurrence remains eligible; cleared or skipped occurrences are never reopened.
+
+Before sleeping, the service saves the consumed occurrence and checks the console user plus the applicable evidence again: a fresh visible-warning heartbeat or the independent unattended-system readings. The optional `systemPresence` field in status responses exposes `displaysAsleep` and `idleSeconds` for diagnosis; it is omitted when the reading is unknown, and absent evidence cannot authorize unattended sleep. The interface accepts a bounded set of schedule, status, and cancellation messages; it does not execute caller-supplied commands or paths.
 
 Installed files:
 

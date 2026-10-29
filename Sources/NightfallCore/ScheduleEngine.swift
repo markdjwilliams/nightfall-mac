@@ -3,12 +3,13 @@ import Foundation
 /// A state machine with no storage, UI, or power API calls. One owner serializes
 /// access, persists state changes, and suppresses power requests if saving fails.
 /// A `true` tick permits one power attempt after persistence and a final owner-side
-/// check that the active user and presentation evidence are still current.
+/// check that the console owner and authorization evidence are still current.
 public final class ScheduleEngine {
     public private(set) var state: EngineState
     private var calendar: Calendar
     private var lastTick: Date
     private var lastUptime: TimeInterval?
+    private var unattendedStartUptime: TimeInterval?
     // Cumulative wall/monotonic elapsed-time difference for the current warning.
     // It is transient: restoring a persisted warning always consumes it safely.
     private var warningClockDrift: TimeInterval = 0
@@ -40,13 +41,13 @@ public final class ScheduleEngine {
         skipMissedOccurrence(now: now)
     }
 
-    /// Returns true at most once per target sleep date after a full acknowledged
-    /// countdown with fresh, usable presentation evidence. The target is consumed
-    /// before returning true. Sample wall-clock `now` and monotonic `uptime` close
-    /// together; wall time schedules the event, uptime detects clock adjustments.
+    /// Returns true at most once per target date after a full visible countdown or
+    /// continuously verified unattended interval. The target is consumed first.
+    /// Sample wall time, uptime, and system presence close together; uptime also
+    /// prevents clock adjustments from shortening an unattended interval.
     @discardableResult
     public func tick(now: Date, consoleUID: UInt32?, presence: AgentPresence?,
-                     uptime: TimeInterval? = nil) -> Bool {
+                     uptime: TimeInterval? = nil, systemPresence: SystemPresence? = nil) -> Bool {
         let gap = now.timeIntervalSince(lastTick)
         let uptimeGap = uptime.flatMap { current in lastUptime.map { current - $0 } }
         lastTick = now
@@ -70,7 +71,7 @@ public final class ScheduleEngine {
                     return false
                 }
             }
-            if pending.presented && gap > presentationGrace {
+            if (pending.presented || pending.unattendedSince != nil) && gap > presentationGrace {
                 finish(day: pending.day, now: now,
                        message: "Skipped because the Mac or schedule service paused during the warning.")
                 return false
@@ -80,10 +81,19 @@ public final class ScheduleEngine {
                        message: "Skipped because the scheduled time zone or calendar changed during the warning.")
                 return false
             }
+            if pending.unattendedSince != nil {
+                return advanceUnattended(now: now, consoleUID: consoleUID, presence: presence,
+                                         uptime: uptime, systemPresence: systemPresence)
+            }
+            if beginUnattended(now: now, consoleUID: consoleUID, presence: presence,
+                               uptime: uptime, systemPresence: systemPresence) {
+                return false
+            }
             return advanceWarning(now: now, consoleUID: consoleUID, presence: presence)
         }
 
         warningClockDrift = 0
+        unattendedStartUptime = nil
         guard state.settings.enabled else { return false }
         for due in candidateSleepTimes(around: now) {
             let day = dayKey(due)
@@ -99,12 +109,15 @@ public final class ScheduleEngine {
             // including when its warning starts on the previous calendar date.
             markHandled(day)
             let agent = usablePresence(presence, consoleUID: consoleUID, now: now)
+            let unattended = systemPresence?.supportsUnattendedInterval(0) == true &&
+                uptime.map { $0.isFinite && $0 >= 0 } == true
+            if unattended { unattendedStartUptime = uptime }
             state.pending = PendingWarning(
                 id: UUID().uuidString, day: day, scheduledAt: due,
                 deadline: now.addingTimeInterval(TimeInterval(state.settings.warningSeconds)),
                 warningSeconds: state.settings.warningSeconds,
                 recipientUID: consoleUID, recipientSessionID: agent?.sessionID,
-                awaitingSince: now)
+                awaitingSince: now, unattendedSince: unattended ? now : nil)
             break
         }
         return false
@@ -182,6 +195,53 @@ public final class ScheduleEngine {
             day = dayKey(now)
         }
         finish(day: day, now: now, message: message)
+    }
+
+    /// Starts a new full interval only while the existing occurrence still has
+    /// presentation grace. No time from a visible or revoked interval carries over.
+    private func beginUnattended(now: Date, consoleUID: UInt32?, presence: AgentPresence?,
+                                 uptime: TimeInterval?, systemPresence: SystemPresence?) -> Bool {
+        guard var pending = state.pending,
+              now.timeIntervalSince(pending.awaitingSince) <= presentationGrace,
+              let uptime, uptime.isFinite, uptime >= 0,
+              systemPresence?.supportsUnattendedInterval(0) == true else { return false }
+        pending.unattendedSince = now
+        pending.presented = false
+        pending.recipientUID = consoleUID
+        pending.recipientSessionID = usablePresence(presence, consoleUID: consoleUID, now: now)?.sessionID
+        pending.deadline = now.addingTimeInterval(TimeInterval(pending.warningSeconds))
+        pending.awaitingSince = now
+        unattendedStartUptime = uptime
+        state.pending = pending
+        return true
+    }
+
+    private func advanceUnattended(now: Date, consoleUID: UInt32?, presence: AgentPresence?,
+                                   uptime: TimeInterval?, systemPresence: SystemPresence?) -> Bool {
+        guard var pending = state.pending else { return false }
+        let elapsed = uptime.flatMap { current in unattendedStartUptime.map { current - $0 } }
+        if let elapsed, consoleUID == pending.recipientUID,
+           systemPresence?.supportsUnattendedInterval(elapsed) == true {
+            if now >= pending.deadline, elapsed >= TimeInterval(pending.warningSeconds),
+               systemPresence?.supportsUnattendedInterval(TimeInterval(pending.warningSeconds)) == true {
+                finish(day: pending.day, now: now, message: "Requested scheduled sleep.")
+                return true
+            }
+            return false
+        }
+
+        // Discard this interval completely. A returning user receives fresh
+        // presentation grace and a full visible warning. Later verified darkness
+        // may begin another full unattended interval while this warning is pending.
+        pending.unattendedSince = nil
+        pending.presented = false
+        pending.recipientUID = consoleUID
+        pending.recipientSessionID = nil
+        pending.deadline = now.addingTimeInterval(TimeInterval(pending.warningSeconds))
+        pending.awaitingSince = now
+        unattendedStartUptime = nil
+        state.pending = pending
+        return advanceWarning(now: now, consoleUID: consoleUID, presence: presence)
     }
 
     private func advanceWarning(now: Date, consoleUID: UInt32?, presence: AgentPresence?) -> Bool {

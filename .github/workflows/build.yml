@@ -40,6 +40,9 @@ jobs:
           python3 Tests/InstallerTests.py
           python3 Tests/UninstallTests.py
 
+      - name: Test display and input probes with injected failures
+        run: ./Tests/run-system-tests.sh
+
       - name: Build and verify Intel app archive
         env:
           NIGHTFALL_ARCH: x86_64

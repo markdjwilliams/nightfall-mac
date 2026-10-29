@@ -2,6 +2,75 @@ import Foundation
 import Darwin
 import SystemConfiguration
 import IOKit.pwr_mgt
+import CoreGraphics
+
+/// Reads system evidence independently of every user agent. Raw display values
+/// are checked before converting to Bool: an error-like nonzero value is not
+/// proof of sleep. Unknown input/display state cannot authorize unattended sleep.
+struct SystemPresenceReader {
+    struct Display {
+        var id: UInt32
+        var online: UInt32
+        var asleep: UInt32
+    }
+
+    struct DisplaySnapshot {
+        var reportedCount: UInt32
+        var displays: [Display]
+    }
+
+    static let maximumDisplays: UInt32 = 128
+    var readDisplays: () -> DisplaySnapshot? = SystemPresenceReader.systemDisplays
+    var readIdleSeconds: () -> TimeInterval? = SystemPresenceReader.systemIdleSeconds
+
+    func sample() -> SystemPresence? {
+        guard let snapshot = readDisplays(), snapshot.reportedCount > 0,
+              snapshot.reportedCount < Self.maximumDisplays,
+              snapshot.displays.count == Int(snapshot.reportedCount),
+              Set(snapshot.displays.map(\.id)).count == snapshot.displays.count,
+              snapshot.displays.allSatisfy({ $0.id != 0 && $0.online == 1 && ($0.asleep == 0 || $0.asleep == 1) }),
+              let idle = readIdleSeconds(), idle.isFinite, idle >= 0,
+              idle < TimeInterval.greatestFiniteMagnitude else { return nil }
+        return SystemPresence(displaysAsleep: snapshot.displays.allSatisfy { $0.asleep == 1 },
+                              idleSeconds: idle)
+    }
+
+    static func unchangedDisplayInventory(_ initial: [UInt32], _ final: [UInt32]) -> Bool {
+        initial.count == final.count && Set(initial) == Set(final)
+    }
+
+    static func systemDisplays() -> DisplaySnapshot? {
+        var expectedCount: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &expectedCount) == .success,
+              expectedCount > 0, expectedCount < maximumDisplays else { return nil }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(expectedCount))
+        var actualCount: UInt32 = 0
+        guard CGGetOnlineDisplayList(expectedCount, &ids, &actualCount) == .success,
+              actualCount == expectedCount else { return nil }
+        // boolean_t is signed on ARM and unsigned on Intel. Preserve raw bits
+        // so negative error-like values remain invalid instead of becoming true.
+        let displays = ids.map {
+            Display(id: $0, online: UInt32(truncatingIfNeeded: CGDisplayIsOnline($0)),
+                    asleep: UInt32(truncatingIfNeeded: CGDisplayIsAsleep($0)))
+        }
+        // Display hot-plugging can replace one display without changing the
+        // count. Re-enumerate with spare capacity and require the same ID set.
+        // An at-cap inventory is rejected rather than assumed complete.
+        var finalIDs = [CGDirectDisplayID](repeating: 0, count: Int(maximumDisplays))
+        var finalCount: UInt32 = 0
+        guard CGGetOnlineDisplayList(maximumDisplays, &finalIDs, &finalCount) == .success,
+              finalCount == expectedCount,
+              unchangedDisplayInventory(ids, Array(finalIDs.prefix(Int(finalCount)))) else { return nil }
+        return DisplaySnapshot(reportedCount: actualCount, displays: displays)
+    }
+
+    static func systemIdleSeconds() -> TimeInterval? {
+        guard let anyInput = CGEventType(rawValue: UInt32.max) else { return nil }
+        // HID system state combines hardware sources and is documented for
+        // daemons. Combined-session state would inspect only the caller's login.
+        return CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: anyInput)
+    }
+}
 
 /// Identifies the foreground desktop's user. A console UID alone does not prove
 /// the desktop is unlocked or that its warning can receive input.
@@ -23,6 +92,7 @@ final class NightfallDaemon {
     private let directory: String
     private let socketPath: String
     private let dryRun: Bool
+    private let systemPresenceReader: SystemPresenceReader
     private var agents: [UInt32: AgentPresence] = [:]
     private var timer: DispatchSourceTimer?
     private var lockFD: Int32 = -1
@@ -41,10 +111,25 @@ final class NightfallDaemon {
         }
     }
 
-    init(directory: String, socketPath: String, dryRun: Bool) throws {
+    /// Validates the fresh sample taken after persistence. Owner reads bracket
+    /// that sample, and idle time must cover the whole unattended interval, not
+    /// just the configured minimum. A stable absent console is allowed only with
+    /// the same independently verified display/input evidence.
+    static func verifiesUnattendedSleep(_ warning: PendingWarning, consoleBefore: UInt32?, consoleAfter: UInt32?,
+                                       systemPresence: SystemPresence?, now: Date) -> Bool {
+        guard let start = warning.unattendedSince else { return false }
+        let elapsed = now.timeIntervalSince(start)
+        return consoleBefore == warning.recipientUID && consoleAfter == consoleBefore &&
+            elapsed.isFinite && elapsed >= TimeInterval(warning.warningSeconds) && now >= warning.deadline &&
+            systemPresence?.supportsUnattendedInterval(max(TimeInterval(warning.warningSeconds), elapsed)) == true
+    }
+
+    init(directory: String, socketPath: String, dryRun: Bool,
+         systemPresenceReader: SystemPresenceReader = SystemPresenceReader()) throws {
         self.directory = directory
         self.socketPath = socketPath
         self.dryRun = dryRun
+        self.systemPresenceReader = systemPresenceReader
         guard dryRun || geteuid() == 0 else { throw SocketError.system("Service requires administrator installation", EPERM) }
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
@@ -108,11 +193,12 @@ final class NightfallDaemon {
     }
 
     private func tick() {
+        let systemPresence = systemPresenceReader.sample()
         let now = Date()
         let console = currentConsoleUID()
         let before = engine.state.pending
         let shouldSleep = engine.tick(now: now, consoleUID: console, presence: console.flatMap { agents[$0] },
-                                      uptime: ProcessInfo.processInfo.systemUptime)
+                                      uptime: ProcessInfo.processInfo.systemUptime, systemPresence: systemPresence)
         // The engine consumes an approved occurrence before returning true.
         // Persist that decision before power to preserve it across service restarts.
         guard persist(), shouldSleep else { return }
@@ -120,13 +206,26 @@ final class NightfallDaemon {
         // narrow the user-switch race before handing control to macOS.
         let finalConsole = currentConsoleUID()
         let verificationTime = Date()
-        guard let expected = before, let uid = expected.recipientUID,
-              finalConsole == uid, let agent = agents[uid],
-              agent.sessionID == expected.recipientSessionID,
-              agent.isUsable, agent.visibleWarningID == expected.id,
-              verificationTime.timeIntervalSince(agent.lastSeen) >= 0,
-              verificationTime.timeIntervalSince(agent.lastSeen) <= 3 else {
-            engine.recordFailure("Skipped because the active user changed before sleep.", now: now)
+        guard let expected = before else {
+            engine.recordFailure("Skipped because the sleep warning was unavailable before sleep.", now: now)
+            _ = persist()
+            return
+        }
+        let verified: Bool
+        if expected.unattendedSince != nil {
+            let finalPresence = systemPresenceReader.sample()
+            verified = Self.verifiesUnattendedSleep(expected, consoleBefore: finalConsole, consoleAfter: currentConsoleUID(),
+                                                    systemPresence: finalPresence, now: Date())
+        } else if let uid = expected.recipientUID, let agent = agents[uid] {
+            verified = finalConsole == uid && agent.sessionID == expected.recipientSessionID &&
+                agent.isUsable && agent.visibleWarningID == expected.id &&
+                verificationTime.timeIntervalSince(agent.lastSeen) >= 0 &&
+                verificationTime.timeIntervalSince(agent.lastSeen) <= 3
+        } else {
+            verified = false
+        }
+        guard verified else {
+            engine.recordFailure("Skipped because the active user or system presence changed before sleep.", now: now)
             _ = persist()
             return
         }
@@ -186,7 +285,8 @@ final class NightfallDaemon {
         // for clock-rollback protection; IPC carries a bounded recent history.
         var snapshot = engine.state
         snapshot.handledDays = Array(snapshot.handledDays.suffix(60))
-        return ServiceResponse(state: snapshot, nextRun: engine.nextRun(after: now), error: message, dryRun: dryRun)
+        return ServiceResponse(state: snapshot, nextRun: engine.nextRun(after: now), error: message, dryRun: dryRun,
+                               systemPresence: systemPresenceReader.sample())
     }
 
     func run() throws -> Never {

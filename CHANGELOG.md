@@ -1,5 +1,16 @@
 # Changes
 
+## 1.1.2 beta — October 29, 2026
+
+- Address a failed field test in 1.1.0: the Mac was idle with its displays asleep, so the visible-warning requirement consumed the scheduled occurrence without requesting sleep.
+- Allow a full unattended countdown only when the service independently verifies every online display is asleep, no input occurs throughout the warning interval, and the console user remains unchanged. Idle time alone is insufficient while a display is awake.
+- Require a fresh, full visible warning after input, a waking display, a user change, or an unknown system reading revokes unattended approval. If all displays later sleep while the occurrence is still pending and within presentation grace, start a new full unattended interval without inheriting earlier elapsed time. Cleared or skipped occurrences stay consumed.
+- Keep the visible countdown running when another application has keyboard focus, provided the warning remains usable, visible, not occluded, and on the active desktop. Accept the first click on **Skip tonight** even when its window is inactive.
+- Keep per-user polling active while menus or dialogs use another run-loop mode, so opening the menu does not stall the app's presentation updates.
+- Expose optional display/input evidence in status responses and add probe-failure and unattended-countdown regression checks.
+
+Automated checks use injected system samples or run with power actions disabled. The installed root service's readings with sleeping displays, return-to-desktop behavior, focus and first-click handling, user switching, and actual hardware sleep still need hands-on testing. This change does not establish that every Mac or display configuration will sleep successfully.
+
 ## 1.1.1 beta — October 28, 2026
 
 - Keep edits made while a save is in progress. Pausing from the menu changes only the enabled setting and preserves unfinished time or chime edits.

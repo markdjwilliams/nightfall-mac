@@ -6,8 +6,8 @@ public struct Settings: Codable, Equatable {
     public var enabled: Bool
     public var hour: Int
     public var minute: Int
-    /// Full countdown after visible presentation is acknowledged. A late
-    /// acknowledgment can move sleep beyond the configured hour and minute.
+    /// Full interval for visible presentation or verified unattended observation.
+    /// Late presentation can move sleep beyond the configured hour and minute.
     public var warningSeconds: Int
     public var chimeEnabled: Bool
 
@@ -63,31 +63,36 @@ public struct Settings: Codable, Equatable {
     }
 }
 
-/// A consumed occurrence awaiting or receiving live presentation acknowledgments.
-/// Persisting this record protects against repeats; restoration skips it rather
-/// than resuming a countdown whose presentation continuity cannot be established.
+/// A consumed occurrence receiving presentation evidence or an independently
+/// verified unattended countdown. Restoration skips it because continuity of
+/// either route cannot be established across a service restart.
 public struct PendingWarning: Codable, Equatable {
     public var id: String
     /// Target sleep date in the engine calendar, even if the warning starts yesterday.
     public var day: String
     /// Original intended sleep time, before presentation delays or user switches.
     public var scheduledAt: Date
-    /// Wall-clock countdown end; provisional until the recipient acknowledges visibility.
+    /// Wall-clock countdown end. The visible route restarts it when presentation is acknowledged.
     public var deadline: Date
     public var warningSeconds: Int
     public var recipientUID: UInt32?
     /// Identifies an agent instance so a new login or restarted app gets a full countdown.
     public var recipientSessionID: String?
-    /// Creation time before the first visible acknowledgment, then the latest
-    /// engine time accepting visible evidence. Recipient changes do not renew grace.
+    /// Start of the current presentation-grace period, then the latest engine
+    /// time accepting visible evidence. Recipient changes alone do not renew grace.
+    /// Unattended verification uses its separate start time instead of this grace.
     public var awaitingSince: Date
     /// Whether the latest engine step accepted visible presentation for this recipient.
     public var presented: Bool
+    /// Start of the current countdown with all displays asleep and no later input.
+    /// Revocation clears it; new verified darkness can start a full new interval
+    /// only while this occurrence remains pending within its presentation grace.
+    public var unattendedSince: Date?
 
     public init(id: String, day: String, scheduledAt: Date, deadline: Date,
                 warningSeconds: Int, recipientUID: UInt32? = nil,
                 recipientSessionID: String? = nil, awaitingSince: Date,
-                presented: Bool = false) {
+                presented: Bool = false, unattendedSince: Date? = nil) {
         self.id = id
         self.day = day
         self.scheduledAt = scheduledAt
@@ -97,6 +102,7 @@ public struct PendingWarning: Codable, Equatable {
         self.recipientSessionID = recipientSessionID
         self.awaitingSince = awaitingSince
         self.presented = presented
+        self.unattendedSince = unattendedSince
     }
 }
 
@@ -162,5 +168,24 @@ public struct AgentPresence: Equatable {
         self.lastSeen = lastSeen
         self.isUsable = isUsable
         self.visibleWarningID = visibleWarningID
+    }
+}
+
+/// A fresh, trusted system sample obtained by the service, independently of the
+/// per-user agent. Missing or invalid evidence cannot authorize unattended sleep.
+public struct SystemPresence: Codable, Equatable {
+    public var displaysAsleep: Bool
+    public var idleSeconds: TimeInterval
+
+    public init(displaysAsleep: Bool, idleSeconds: TimeInterval) {
+        self.displaysAsleep = displaysAsleep
+        self.idleSeconds = idleSeconds
+    }
+
+    /// Checks this sample's display/idle evidence only. The owner also verifies
+    /// a stable console owner and uninterrupted observation before requesting sleep.
+    public func supportsUnattendedInterval(_ seconds: TimeInterval) -> Bool {
+        displaysAsleep && seconds.isFinite && seconds >= 0 &&
+            idleSeconds.isFinite && idleSeconds >= seconds
     }
 }

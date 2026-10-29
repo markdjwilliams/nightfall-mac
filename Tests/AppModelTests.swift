@@ -1,4 +1,6 @@
 import Foundation
+import CoreFoundation
+import AppKit
 
 private enum TestFailure: Error, LocalizedError {
     case failed(String)
@@ -84,7 +86,9 @@ private struct AppModelTests {
             ("save cannot also skip tomorrow", saveThenSkip),
             ("pause does not save unfinished edits", pausePreservesEdits),
             ("failed pause reports failure", failedPause),
-            ("poll waits for all queued actions", pollBackpressure)
+            ("poll waits for all queued actions", pollBackpressure),
+            ("poll timer runs during menu tracking", menuTrackingHeartbeat),
+            ("visible warnings do not require keyboard focus", visibleWithoutKeyboardFocus)
         ]
         for (name, test) in tests { try test(); print("PASS \(name)") }
         print("\(tests.count) app model tests passed; injected transport only.")
@@ -253,5 +257,57 @@ private struct AppModelTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         try expect(stub.requests.map(\.command) == ["settings", "cancel"],
                    "A poll was admitted while another user action was still queued")
+    }
+
+    static func menuTrackingHeartbeat() throws {
+        let stub = StubService([.success(response()), .success(response())])
+        let m = model(stub)
+        var updates = 0
+        m.onUpdate = { updates += 1 }
+        m.start()
+        try stub.waitForRequest()
+        stub.respond()
+        try pump { updates == 1 }
+
+        // A CLI test does not start AppKit's event loop. Register its menu mode
+        // as common explicitly, then run that mode instead of the default one.
+        CFRunLoopAddCommonMode(CFRunLoopGetMain(),
+                               CFRunLoopMode(rawValue: RunLoop.Mode.eventTracking.rawValue as CFString))
+        let deadline = Date().addingTimeInterval(2)
+        while stub.requests.count < 2, Date() < deadline {
+            RunLoop.main.run(mode: .eventTracking, before: deadline)
+        }
+        try expect(stub.requests.count == 2, "The menu-tracking mode suspended the poll heartbeat")
+        stub.respond()
+        try pump { updates == 2 }
+    }
+
+    static func visibleWithoutKeyboardFocus() throws {
+        for input in [WarningPresentation.InputAvailability.mouse, .keyboardAndMouse] {
+            try expect(WarningPresentation(visibleOnCurrentDesktop: true, input: input).canAcknowledge,
+                       "A visible warning with mouse cancellation must remain eligible without keyboard focus")
+            try expect(!WarningPresentation(visibleOnCurrentDesktop: false, input: input).canAcknowledge,
+                       "A hidden, occluded, or off-desktop warning must not acknowledge presentation")
+        }
+        try expect(!WarningPresentation(visibleOnCurrentDesktop: true, input: .blocked).canAcknowledge,
+                   "A modal, mouse-disabled, or disabled cancellation control must not approve sleep")
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let target = calendar.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 20, minute: 30))!
+        let start = target.addingTimeInterval(-30)
+        let engine = ScheduleEngine(state: EngineState(settings: Settings(warningSeconds: 30)),
+                                    now: start.addingTimeInterval(-1), calendar: calendar)
+        _ = engine.tick(now: start, consoleUID: 501, presence: nil)
+        let id = engine.state.pending!.id
+        for second in 1...31 {
+            let now = start.addingTimeInterval(Double(second))
+            let presentation = WarningPresentation(visibleOnCurrentDesktop: true,
+                input: second < 10 ? .keyboardAndMouse : .mouse)
+            let presence = AgentPresence(uid: 501, sessionID: "focus-test", lastSeen: now,
+                isUsable: true, visibleWarningID: presentation.canAcknowledge ? id : nil)
+            try expect(engine.tick(now: now, consoleUID: 501, presence: presence) == (second == 31),
+                       "Continuing in another app must not reset or cancel a visible warning's full countdown")
+        }
     }
 }

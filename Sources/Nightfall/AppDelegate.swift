@@ -2,6 +2,11 @@ import AppKit
 import SwiftUI
 import Darwin
 
+/// The cancel button must work on the first click when another app is active.
+private final class WarningHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// Owns one login's menu and windows; the system service owns sleep decisions.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     let model = AppModel()
@@ -157,7 +162,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             warningSound?.stop()
             return
         }
-        if model.previewWarning == nil && !model.isCurrentSessionUsable {
+        // Do not wake a sleeping display to show an unattended countdown. After
+        // activity returns, the service revokes that path before we present the
+        // user's new full countdown.
+        if model.previewWarning == nil && (warning.unattendedSince != nil || !model.isCurrentSessionUsable) {
             warningWindow?.orderOut(nil)
             model.warningWindow = nil
             displayedWarningID = nil
@@ -176,14 +184,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             window.isReleasedWhenClosed = false
             window.level = .floating
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            window.contentView = NSHostingView(rootView: WarningView(model: model))
+            window.contentView = WarningHostingView(rootView: WarningView(model: model))
             window.delegate = self
             warningWindow = window
         }
         model.warningWindow = warningWindow
         warningWindow?.center()
-        NSApp.activate(ignoringOtherApps: true)
-        warningWindow?.makeKeyAndOrderFront(nil)
+        // Keep the warning in view while the user continues in another app.
+        // Its hosting view accepts the cancellation click without stealing focus.
+        warningWindow?.orderFrontRegardless()
         let chimeEnabled = model.previewWarning != nil ? model.draft.chimeEnabled : model.state?.settings.chimeEnabled == true
         if chimeEnabled {
             warningSound = NSSound(named: "Glass")
@@ -191,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             warningSound?.play()
         }
         // Window ordering can be asynchronous. The model acknowledges only if
-        // visibility and input focus checks actually pass on this or a later poll.
+        // visibility and cancellation checks actually pass on this or a later poll.
         model.poll()
     }
 

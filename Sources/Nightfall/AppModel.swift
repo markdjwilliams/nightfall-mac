@@ -2,6 +2,18 @@ import AppKit
 import SwiftUI
 import CoreGraphics
 
+/// Mouse input is enough to cancel a floating warning while the user keeps
+/// keyboard focus in another app.
+struct WarningPresentation {
+    enum InputAvailability { case blocked, mouse, keyboardAndMouse }
+    var visibleOnCurrentDesktop: Bool
+    var input: InputAvailability
+
+    var canAcknowledge: Bool {
+        visibleOnCurrentDesktop && input != .blocked
+    }
+}
+
 /// Main-thread UI state and actions for one login session.
 ///
 /// `state` is the last service snapshot; `draft` holds independent, unsaved edits.
@@ -91,12 +103,16 @@ final class AppModel: ObservableObject {
         observe(NSWorkspace.screensDidWakeNotification) { [weak self] in self?.screenAwake = true; self?.poll() }
         observe(NSWorkspace.willSleepNotification) { [weak self] in self?.screenAwake = false; self?.poll() }
         observe(NSWorkspace.didWakeNotification) { [weak self] in self?.screenAwake = true; self?.poll() }
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+        // Menu tracking uses a different run-loop mode. Keep heartbeats alive
+        // there so an open menu does not make this login's agent appear stale.
+        let pollTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+        timer = pollTimer
+        RunLoop.main.add(pollTimer, forMode: .common)
         poll()
     }
 
     /// Public session and workspace signals permit attempting presentation.
-    /// Window visibility and input focus are checked separately before acknowledgment.
+    /// Window visibility and cancellation availability are checked separately.
     var isCurrentSessionUsable: Bool {
         guard sessionActive, screenAwake,
               let session = CGSessionCopyCurrentDictionary() as? [String: Any],
@@ -106,12 +122,21 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    /// Acknowledges only this process's live warning while it can receive input.
+    /// Acknowledges this process's visible warning while its cancel button can
+    /// receive mouse input, even while another app has keyboard focus.
     /// The service independently checks the console owner and heartbeat freshness.
     private var visibleWarningID: String? {
-        guard isCurrentSessionUsable, previewWarning == nil, !cancellingWarning, let pending = state?.pending,
-              let window = warningWindow, window.isVisible, window.isOnActiveSpace,
-              window.occlusionState.contains(.visible), window.isKeyWindow, NSApp.isActive else { return nil }
+        guard isCurrentSessionUsable, previewWarning == nil, !cancellingWarning,
+              !performingMaintenance, let pending = state?.pending,
+              pending.unattendedSince == nil, let window = warningWindow else { return nil }
+        let visible = window.isVisible && window.isOnActiveSpace && !window.isMiniaturized &&
+            window.alphaValue > 0 && window.occlusionState.contains(.visible)
+        let modalBlocksInput = NSApp.modalWindow.map { $0 !== window } ?? false
+        let blocked = !window.canBecomeKey || window.ignoresMouseEvents ||
+            window.attachedSheet != nil || modalBlocksInput
+        let input: WarningPresentation.InputAvailability = blocked ? .blocked :
+            (window.isKeyWindow && NSApp.isActive ? .keyboardAndMouse : .mouse)
+        guard WarningPresentation(visibleOnCurrentDesktop: visible, input: input).canAcknowledge else { return nil }
         return pending.id
     }
 
