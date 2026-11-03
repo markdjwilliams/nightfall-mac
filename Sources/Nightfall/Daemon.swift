@@ -92,7 +92,7 @@ final class NightfallDaemon {
     private let directory: String
     private let socketPath: String
     private let dryRun: Bool
-    private let systemPresenceReader: SystemPresenceReader
+    private let systemPresenceProvider: SystemPresenceProvider
     private var agents: [UInt32: AgentPresence] = [:]
     private var timer: DispatchSourceTimer?
     private var lockFD: Int32 = -1
@@ -124,12 +124,26 @@ final class NightfallDaemon {
             systemPresence?.supportsUnattendedInterval(max(TimeInterval(warning.warningSeconds), elapsed)) == true
     }
 
+    /// Query latency must precede both clock reads. A slow console lookup
+    /// between them would look like a wall-clock jump to the engine.
+    static func sampleTickInputs(readSystemPresence: () -> SystemPresence?, readConsole: () -> UInt32?,
+                                 readDate: () -> Date = { Date() },
+                                 readUptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime })
+        -> (systemPresence: SystemPresence?, consoleUID: UInt32?, now: Date, uptime: TimeInterval) {
+        let systemPresence = readSystemPresence()
+        let consoleUID = readConsole()
+        let now = readDate()
+        let uptime = readUptime()
+        return (systemPresence, consoleUID, now, uptime)
+    }
+
     init(directory: String, socketPath: String, dryRun: Bool,
          systemPresenceReader: SystemPresenceReader = SystemPresenceReader()) throws {
         self.directory = directory
         self.socketPath = socketPath
         self.dryRun = dryRun
-        self.systemPresenceReader = systemPresenceReader
+        self.systemPresenceProvider = SystemPresenceProvider(allowGUIProbe: !dryRun && geteuid() == 0,
+                                                             readDirect: systemPresenceReader.sample)
         guard dryRun || geteuid() == 0 else { throw SocketError.system("Service requires administrator installation", EPERM) }
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
@@ -163,7 +177,9 @@ final class NightfallDaemon {
         } else {
             throw SocketError.system("Open saved state", errno)
         }
-        engine = ScheduleEngine(state: state, now: Date(), uptime: ProcessInfo.processInfo.systemUptime)
+        let now = Date()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        engine = ScheduleEngine(state: state, now: now, uptime: uptime)
         lockFD = openedLock
         retainLock = true
     }
@@ -193,12 +209,14 @@ final class NightfallDaemon {
     }
 
     private func tick() {
-        let systemPresence = systemPresenceReader.sample()
-        let now = Date()
-        let console = currentConsoleUID()
+        let presence = systemPresenceProvider.sample(readConsole: currentConsoleUID)
+        let sample = Self.sampleTickInputs(readSystemPresence: { presence.presence },
+                                          readConsole: { presence.consoleUID })
+        let now = sample.now
+        let console = sample.consoleUID
         let before = engine.state.pending
         let shouldSleep = engine.tick(now: now, consoleUID: console, presence: console.flatMap { agents[$0] },
-                                      uptime: ProcessInfo.processInfo.systemUptime, systemPresence: systemPresence)
+                                      uptime: sample.uptime, systemPresence: sample.systemPresence)
         // The engine consumes an approved occurrence before returning true.
         // Persist that decision before power to preserve it across service restarts.
         guard persist(), shouldSleep else { return }
@@ -213,9 +231,9 @@ final class NightfallDaemon {
         }
         let verified: Bool
         if expected.unattendedSince != nil {
-            let finalPresence = systemPresenceReader.sample()
-            verified = Self.verifiesUnattendedSleep(expected, consoleBefore: finalConsole, consoleAfter: currentConsoleUID(),
-                                                    systemPresence: finalPresence, now: Date())
+            let finalPresence = systemPresenceProvider.sample(readConsole: currentConsoleUID, forceFresh: true)
+            verified = Self.verifiesUnattendedSleep(expected, consoleBefore: finalConsole, consoleAfter: finalPresence.consoleUID,
+                                                    systemPresence: finalPresence.presence, now: Date())
         } else if let uid = expected.recipientUID, let agent = agents[uid] {
             verified = finalConsole == uid && agent.sessionID == expected.recipientSessionID &&
                 agent.isUsable && agent.visibleWarningID == expected.id &&
@@ -285,8 +303,10 @@ final class NightfallDaemon {
         // for clock-rollback protection; IPC carries a bounded recent history.
         var snapshot = engine.state
         snapshot.handledDays = Array(snapshot.handledDays.suffix(60))
+        let presence = systemPresenceProvider.sample(readConsole: currentConsoleUID)
         return ServiceResponse(state: snapshot, nextRun: engine.nextRun(after: now), error: message, dryRun: dryRun,
-                               systemPresence: systemPresenceReader.sample())
+                               systemPresence: presence.presence,
+                               systemPresenceDiagnostic: systemPresenceProvider.diagnostic)
     }
 
     func run() throws -> Never {

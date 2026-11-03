@@ -70,6 +70,10 @@ private enum EngineTests {
             ("cancel current warning only", cancelWarning),
             ("switch active users and sessions", switchUsers),
             ("missing unseen unusable and stale agents", missingAgents),
+            ("unseen warnings recover after the displays later sleep", delayedUnattendedRecovery),
+            ("late visible recovery receives a full warning", delayedVisibleRecovery),
+            ("waiting cancellation and restart remain consumed", waitingCancellation),
+            ("waiting expires at the next calendar warning", waitingExpiry),
             ("lost visibility resets the full countdown", lostVisibility),
             ("fresh visible active agent required at deadline", deadlineSafety),
             ("pause during countdown skips occurrence", countdownPause),
@@ -350,8 +354,8 @@ private enum EngineTests {
                 try expect(!e.tick(now: now, consoleUID: 501, presence: presence),
                            "\(kind) agent must never cause sleep")
             }
-            try expect(e.state.pending == nil && e.state.lastOutcome != nil,
-                       "\(kind) agent must skip after ten seconds without presentation")
+            try expect(e.state.pending?.presented == false && e.state.lastOutcome == nil,
+                       "\(kind) agent must wait without approving or consuming the occurrence")
         }
         let switching = engine()
         _ = try trigger(switching)
@@ -360,8 +364,165 @@ private enum EngineTests {
             try expect(!switching.tick(now: now, consoleUID: UInt32(501 + second % 2), presence: nil),
                        "Repeated console changes with no warning must not sleep")
         }
-        try expect(switching.state.pending == nil,
-                   "Repeated user changes must not extend an unseen warning indefinitely")
+        try expect(switching.state.pending?.presented == false,
+                   "Repeated user changes without presentation must keep waiting without approving sleep")
+    }
+
+    static func delayedUnattendedRecovery() throws {
+        // Field failure: the warning was not confirmed visible at 20:28,
+        // while the displays did not go dark until 20:37. Ten seconds of missing
+        // presentation must not cancel the rest of this scheduled occurrence.
+        let target = date(2026, 11, 1, 20, 30)
+        let start = target.addingTimeInterval(-120)
+        let e = ScheduleEngine(state: EngineState(), now: start.addingTimeInterval(-1),
+                               calendar: vancouver, uptime: 99)
+        let awake = SystemPresence(displaysAsleep: false, idleSeconds: 600)
+        try expect(!e.tick(now: start, consoleUID: 501, presence: agent(start), uptime: 100,
+                           systemPresence: awake), "Creating an unseen warning must not approve sleep")
+        let id = e.state.pending!.id
+        for second in 1..<540 {
+            let now = start.addingTimeInterval(Double(second))
+            try expect(!e.tick(now: now, consoleUID: 501, presence: agent(now),
+                               uptime: 100 + Double(second), systemPresence: awake),
+                       "An awake desktop without a visible warning must never approve sleep")
+        }
+        try expect(e.state.pending?.id == id && e.state.pending?.presented == false &&
+                   e.state.lastOutcome == nil,
+                   "The original occurrence must remain recoverable after its warning was unseen")
+        let darkAt = date(2026, 11, 1, 20, 37)
+        try expect(!e.tick(now: darkAt, consoleUID: 501, presence: nil, uptime: 640,
+                           systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 1140)),
+                   "Late darkness starts a new interval rather than approving immediate sleep")
+        try expect(e.state.pending?.id == id && e.state.pending?.unattendedSince == darkAt &&
+                   e.state.pending?.deadline == date(2026, 11, 1, 20, 39),
+                   "All nine minutes of waiting must be excluded from the unattended interval")
+        for second in 1...121 {
+            let now = darkAt.addingTimeInterval(Double(second))
+            try expect(e.tick(now: now, consoleUID: 501, presence: nil, uptime: 640 + Double(second),
+                              systemPresence: SystemPresence(displaysAsleep: true,
+                                                             idleSeconds: 1140 + Double(second))) == (second == 120),
+                       "The recovered occurrence must approve once, after the full two-minute idle interval")
+        }
+        try expect(e.state.pending == nil && e.state.lastOutcome?.day == "2026-11-01" &&
+                   e.state.handledDays.filter({ $0 == "2026-11-01" }).count == 1,
+                   "Late recovery must preserve the original target's once-only identity")
+    }
+
+    static func delayedVisibleRecovery() throws {
+        let e = engine()
+        let id = try trigger(e)
+        for second in 1...60 {
+            let now = warningDate(Double(second))
+            try expect(!e.tick(now: now, consoleUID: 501, presence: agent(now)),
+                       "An unseen warning must wait without counting down")
+        }
+        for second in 61...91 {
+            let now = warningDate(Double(second))
+            try expect(e.tick(now: now, consoleUID: 502,
+                              presence: agent(now, uid: 502, session: "late-user", visible: id)) == (second == 91),
+                       "A late returning user must receive a full newly acknowledged countdown")
+            if second == 61 {
+                try expect(e.state.pending?.deadline == warningDate(91) && e.state.pending?.recipientUID == 502,
+                           "The late acknowledgment must discard the expired provisional deadline")
+            }
+        }
+
+        let lost = engine()
+        let lostID = try trigger(lost)
+        try visibleTicks(lost, id: lostID, seconds: 1...10)
+        for second in 11...61 {
+            let now = warningDate(Double(second))
+            try expect(!lost.tick(now: now, consoleUID: 501, presence: agent(now)),
+                       "Lost visibility for more than ten seconds must stop the countdown without consuming it")
+        }
+        try visibleTicks(lost, id: lostID, seconds: 62...92, sleepAt: 92)
+        try expect(lost.state.pending == nil && lost.state.lastOutcome?.message == "Requested scheduled sleep.",
+                   "Visibility recovered after a long wait must complete only after its new full interval")
+    }
+
+    static func waitingCancellation() throws {
+        for action in ["cancel", "skip", "settings", "restart"] {
+            var e = engine()
+            let id = try trigger(e)
+            for second in 1...60 {
+                let now = warningDate(Double(second))
+                try expect(!e.tick(now: now, consoleUID: nil, presence: nil),
+                           "A signed-out waiting occurrence must never authorize power")
+            }
+            let actionAt = warningDate(60)
+            switch action {
+            case "cancel": e.cancelWarning(id: id, now: actionAt)
+            case "skip": e.skipTonight(now: actionAt)
+            case "settings": try e.updateSettings(Settings(hour: 21, warningSeconds: 30), now: actionAt)
+            default:
+                let state = try JSONDecoder().decode(EngineState.self, from: JSONEncoder().encode(e.state))
+                e = ScheduleEngine(state: state, now: actionAt, calendar: vancouver)
+            }
+            try expect(e.state.pending == nil && e.state.lastOutcome?.day == "2026-10-28",
+                       "Explicit cancellation, settings changes, and restart must still consume waiting occurrences")
+            let outcome = e.state.lastOutcome
+            for second in 61...190 {
+                let now = warningDate(Double(second))
+                try expect(!e.tick(now: now, consoleUID: 501, presence: agent(now, visible: id),
+                                   uptime: 100 + Double(second),
+                                   systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                           "New darkness or a late old acknowledgment must not revive a consumed occurrence")
+            }
+            try expect(e.state.pending == nil && e.state.lastOutcome == outcome,
+                       "Safe recovery must never override a prior explicit or restart outcome")
+        }
+    }
+
+    static func waitingExpiry() throws {
+        let cases: [(Date, Date, Int)] = [
+            (date(2026, 10, 28), date(2026, 10, 29), 30),
+            (date(2026, 10, 29, 0, 1), date(2026, 10, 30, 0, 1), 120),
+            (date(2025, 3, 8), date(2025, 3, 9), 30),
+            (date(2025, 11, 1), date(2025, 11, 2), 30)
+        ]
+        for (target, nextTarget, warningSeconds) in cases {
+            let parts = vancouver.dateComponents([.hour, .minute], from: target)
+            let settings = Settings(hour: parts.hour!, minute: parts.minute!, warningSeconds: warningSeconds)
+            let start = target.addingTimeInterval(-Double(warningSeconds))
+            let e = ScheduleEngine(state: EngineState(settings: settings), now: start.addingTimeInterval(-1),
+                                   calendar: vancouver, uptime: 99)
+            let awake = SystemPresence(displaysAsleep: false, idleSeconds: 600)
+            _ = e.tick(now: start, consoleUID: 501, presence: agent(start), uptime: 100, systemPresence: awake)
+            let oldID = e.state.pending!.id
+            let oldDay = e.state.pending!.day
+            let cutoff = nextTarget.addingTimeInterval(-Double(warningSeconds))
+            let before = cutoff.addingTimeInterval(-1)
+            try expect(!e.tick(now: before, consoleUID: 501, presence: agent(before),
+                               uptime: 100 + before.timeIntervalSince(start), systemPresence: awake),
+                       "An unstarted occurrence may wait until the next calendar warning")
+            try expect(e.state.pending?.id == oldID,
+                       "Waiting across midnight or a DST change must not expire at a fixed elapsed-day boundary")
+            if target == date(2026, 10, 28) {
+                try expect(!e.tick(now: before, consoleUID: 501, presence: nil,
+                                   uptime: 100 + before.timeIntervalSince(start),
+                                   systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
+                           "Even recovery just before the cutoff cannot approve immediate sleep")
+                try expect(e.state.pending?.unattendedSince == before,
+                           "The cutoff must also expire an interval that cannot finish before the next warning")
+            }
+            try expect(!e.tick(now: cutoff, consoleUID: 501, presence: agent(cutoff, visible: oldID),
+                               uptime: 100 + cutoff.timeIntervalSince(start), systemPresence: awake),
+                       "The next daily warning must begin fresh without a same-tick power approval")
+            guard let fresh = e.state.pending else { throw TestFailure(description: "Expected next daily warning at cutoff") }
+            try expect(fresh.id != oldID && fresh.scheduledAt == nextTarget && !fresh.presented &&
+                       fresh.deadline == cutoff.addingTimeInterval(Double(warningSeconds)) &&
+                       e.state.lastOutcome?.day == oldDay,
+                       "Expiry must consume the old target and create the next target on the same tick")
+            e.cancelWarning(id: oldID, now: cutoff)
+            try expect(e.state.pending?.id == fresh.id,
+                       "A late cancel for the expired target must not cancel its successor")
+            for second in 1...(warningSeconds + 1) {
+                let now = cutoff.addingTimeInterval(Double(second))
+                try expect(e.tick(now: now, consoleUID: 501, presence: agent(now, visible: fresh.id),
+                                  uptime: 100 + now.timeIntervalSince(start), systemPresence: awake) == (second == warningSeconds + 1),
+                           "The successor must receive its own full acknowledged warning")
+            }
+        }
     }
 
     static func lostVisibility() throws {
@@ -396,12 +557,10 @@ private enum EngineTests {
                 try expect(!e.tick(now: now, consoleUID: consoleUID, presence: presence),
                            "\(kind) at deadline must prevent sleep")
             }
-            // Console changes begin their own ten-second presentation grace.
-            if e.state.pending != nil {
-                let now = warningDate(42)
-                try expect(!e.tick(now: now, consoleUID: nil, presence: nil), "Unavailable console must not sleep")
-            }
-            try expect(e.state.pending == nil, "Unavailable deadline must eventually skip")
+            let now = warningDate(42)
+            try expect(!e.tick(now: now, consoleUID: nil, presence: nil), "Unavailable console must not sleep")
+            try expect(e.state.pending?.presented == false,
+                       "Unavailable presentation must stop the countdown and await a full new interval")
         }
     }
 
@@ -588,7 +747,8 @@ private enum EngineTests {
                                    uptime: 100 + Double(second), systemPresence: evidence),
                            "Awake, missing, or invalid system evidence cannot approve silent sleep")
             }
-            try expect(e.state.pending == nil, "An actively used or unknown desktop must still fail closed")
+            try expect(e.state.pending?.presented == false && e.state.pending?.unattendedSince == nil,
+                       "An actively used or unknown desktop must wait without approving sleep")
         }
         for uptime: TimeInterval? in [nil, -1, .nan, .infinity] {
             let e = engine()
@@ -613,9 +773,8 @@ private enum EngineTests {
                                    uptime: 100 + Double(second), systemPresence: awake),
                        "An awake idle desktop with an unseen warning must never approve silent sleep")
         }
-        try expect(unseen.state.pending == nil &&
-                   unseen.state.lastOutcome?.message.contains("could not see") == true,
-                   "A fresh usable app without visible presentation must fail closed on an awake desktop")
+        try expect(unseen.state.pending?.presented == false && unseen.state.lastOutcome == nil,
+                   "A fresh usable app without presentation must await recovery on an awake desktop")
 
         let visible = engine()
         try expect(!visible.tick(now: start, consoleUID: 501, presence: agent(start), uptime: 100,
@@ -655,7 +814,7 @@ private enum EngineTests {
             try expect(e.state.pending?.unattendedSince == nil &&
                        e.state.pending?.awaitingSince == now &&
                        e.state.pending?.deadline == now.addingTimeInterval(30),
-                       "A returning user must receive fresh presentation grace and a full countdown")
+                       "A returning user must await fresh presentation and a full countdown")
             if let owner {
                 for second in 31...61 {
                     let visibleAt = start.addingTimeInterval(Double(second))
@@ -670,7 +829,8 @@ private enum EngineTests {
                 try expect(!e.tick(now: later, consoleUID: nil, presence: nil, uptime: 141,
                                    systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 641)),
                            "A changed console with no visible warning cannot approve sleep")
-                try expect(e.state.pending == nil, "An unavailable returning session must eventually skip")
+                try expect(e.state.pending?.presented == false,
+                           "An unavailable returning session must wait for safe recovery")
             }
         }
     }
@@ -707,24 +867,24 @@ private enum EngineTests {
         let unseen = ScheduleEngine(state: EngineState(settings: Settings(warningSeconds: 30)),
                                     now: start.addingTimeInterval(-1), calendar: vancouver, uptime: 99)
         _ = unseen.tick(now: start, consoleUID: 501, presence: nil, uptime: 100, systemPresence: awake)
-        let withinGrace = start.addingTimeInterval(5)
-        try expect(!unseen.tick(now: withinGrace, consoleUID: 501, presence: nil, uptime: 105,
+        let darkSoon = start.addingTimeInterval(5)
+        try expect(!unseen.tick(now: darkSoon, consoleUID: 501, presence: nil, uptime: 105,
                                 systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
-                   "Darkness within an unseen warning's grace must not immediately approve sleep")
-        try expect(unseen.state.pending?.unattendedSince == withinGrace &&
-                   unseen.state.pending?.deadline == withinGrace.addingTimeInterval(30),
-                   "An unseen pending warning may start a new full interval before grace expires")
+                   "Darkness after an unseen warning must not immediately approve sleep")
+        try expect(unseen.state.pending?.unattendedSince == darkSoon &&
+                   unseen.state.pending?.deadline == darkSoon.addingTimeInterval(30),
+                   "An unseen pending warning must start a new full unattended interval")
 
-        let expired = engine()
-        _ = try trigger(expired)
+        let waiting = engine()
+        _ = try trigger(waiting)
         for second in 11...45 {
             let now = start.addingTimeInterval(Double(second))
-            try expect(!expired.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
-                                     systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)),
-                       "Darkness after presentation grace must not revive an expired occurrence")
+            try expect(waiting.tick(now: now, consoleUID: 501, presence: nil, uptime: 100 + Double(second),
+                                    systemPresence: SystemPresence(displaysAsleep: true, idleSeconds: 600)) == (second == 41),
+                       "Darkness after ten seconds must still require a fresh full interval")
         }
-        try expect(expired.state.pending == nil && expired.state.handledDays.contains("2026-10-28"),
-                   "An expired interactive occurrence must stay consumed")
+        try expect(waiting.state.pending == nil && waiting.state.lastOutcome?.message == "Requested scheduled sleep.",
+                   "A safely recovered occurrence must complete only once")
     }
 
     static func unattendedRevocation() throws {

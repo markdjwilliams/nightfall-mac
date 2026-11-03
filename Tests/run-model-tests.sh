@@ -10,6 +10,7 @@ mkdir -p "$project_dir/.build/model-tests-module-cache"
     -framework AppKit -framework SwiftUI -framework CoreGraphics -framework SystemConfiguration -framework IOKit \
     "$project_dir"/Sources/NightfallCore/*.swift \
     "$project_dir/Sources/Nightfall/IPC.swift" "$project_dir/Sources/Nightfall/Daemon.swift" \
+    "$project_dir/Sources/Nightfall/SystemPresenceProbe.swift" \
     "$project_dir/Sources/Nightfall/AppModel.swift" "$project_dir/Tests/AppModelTests.swift" \
     -o "$temporary/model-tests"
 "$temporary/model-tests"

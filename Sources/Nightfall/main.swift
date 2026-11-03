@@ -9,7 +9,10 @@ func value(after flag: String) -> String? {
     return arguments[index + 1]
 }
 
-if arguments.contains("--version") {
+if arguments.contains("--system-presence-probe-loop") {
+    guard arguments.count == 2 else { exit(EX_USAGE) }
+    SystemPresenceProbe.runLoop()
+} else if arguments.contains("--version") {
     print(NightfallVersion.current)
 } else if arguments.contains("--daemon") {
     do {
@@ -57,6 +60,9 @@ if arguments.contains("--version") {
                                           recipientUID: getuid(), recipientSessionID: model.sessionID,
                                           awaitingSince: now, presented: true)
     try render(WarningView(model: model), name: "warning", size: NSSize(width: 500, height: 490))
+    model.state?.pending?.presented = false
+    model.state?.pending?.deadline = now.addingTimeInterval(-600)
+    try render(WarningView(model: model), name: "warning-waiting", size: NSSize(width: 500, height: 490))
     print("Rendered app previews in \(path)")
 } else {
     let app = NSApplication.shared

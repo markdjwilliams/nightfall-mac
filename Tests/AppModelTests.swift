@@ -88,7 +88,8 @@ private struct AppModelTests {
             ("failed pause reports failure", failedPause),
             ("poll waits for all queued actions", pollBackpressure),
             ("poll timer runs during menu tracking", menuTrackingHeartbeat),
-            ("visible warnings do not require keyboard focus", visibleWithoutKeyboardFocus)
+            ("visible warnings do not require keyboard focus", visibleWithoutKeyboardFocus),
+            ("waiting warnings report an unstarted countdown", waitingWarningStatus)
         ]
         for (name, test) in tests { try test(); print("PASS \(name)") }
         print("\(tests.count) app model tests passed; injected transport only.")
@@ -280,6 +281,21 @@ private struct AppModelTests {
         try expect(stub.requests.count == 2, "The menu-tracking mode suspended the poll heartbeat")
         stub.respond()
         try pump { updates == 2 }
+    }
+
+    static func waitingWarningStatus() throws {
+        let m = AppModel(requestService: { _ in throw TestFailure.failed("Status must not contact the service") })
+        m.connected = true
+        let now = Date()
+        m.state = EngineState()
+        m.state?.pending = PendingWarning(id: "waiting-warning", day: "test", scheduledAt: now,
+            deadline: now.addingTimeInterval(-600), warningSeconds: 120, awaitingSince: now)
+        try expect(m.statusText == "Waiting to show sleep warning", "An unacknowledged warning must not claim its timer is running")
+        m.state?.pending?.presented = true
+        try expect(m.statusText == "Sleep countdown in progress", "A visible countdown should report progress")
+        m.state?.pending?.presented = false
+        m.state?.pending?.unattendedSince = now
+        try expect(m.statusText == "Sleep countdown in progress", "A verified unattended countdown should report progress")
     }
 
     static func visibleWithoutKeyboardFocus() throws {

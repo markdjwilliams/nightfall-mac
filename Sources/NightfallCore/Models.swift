@@ -63,9 +63,10 @@ public struct Settings: Codable, Equatable {
     }
 }
 
-/// A consumed occurrence receiving presentation evidence or an independently
-/// verified unattended countdown. Restoration skips it because continuity of
-/// either route cannot be established across a service restart.
+/// A reserved occurrence waiting for usable presentation or receiving an
+/// independently verified unattended countdown. Waiting expires when the next
+/// daily warning is due. Restoration skips it because continuity of either
+/// countdown route cannot be established across a service restart.
 public struct PendingWarning: Codable, Equatable {
     public var id: String
     /// Target sleep date in the engine calendar, even if the warning starts yesterday.
@@ -78,15 +79,15 @@ public struct PendingWarning: Codable, Equatable {
     public var recipientUID: UInt32?
     /// Identifies an agent instance so a new login or restarted app gets a full countdown.
     public var recipientSessionID: String?
-    /// Start of the current presentation-grace period, then the latest engine
-    /// time accepting visible evidence. Recipient changes alone do not renew grace.
-    /// Unattended verification uses its separate start time instead of this grace.
+    /// Start of the current phase, then the latest accepted visible evidence.
+    /// Retained in snapshots for diagnosis; the next daily warning bounds waiting.
+    /// Unattended verification uses its separate start time.
     public var awaitingSince: Date
     /// Whether the latest engine step accepted visible presentation for this recipient.
     public var presented: Bool
     /// Start of the current countdown with all displays asleep and no later input.
     /// Revocation clears it; new verified darkness can start a full new interval
-    /// only while this occurrence remains pending within its presentation grace.
+    /// only while this occurrence remains pending before the next daily warning.
     public var unattendedSince: Date?
 
     public init(id: String, day: String, scheduledAt: Date, deadline: Date,

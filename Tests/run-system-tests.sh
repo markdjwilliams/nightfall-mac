@@ -8,5 +8,6 @@ trap 'rm -rf "$test_dir"' EXIT
     -framework SystemConfiguration -framework IOKit -framework CoreGraphics \
     "$project_dir"/Sources/NightfallCore/*.swift \
     "$project_dir/Sources/Nightfall/IPC.swift" "$project_dir/Sources/Nightfall/Daemon.swift" \
+    "$project_dir/Sources/Nightfall/SystemPresenceProbe.swift" \
     "$project_dir/Tests/SystemPresenceTests.swift" -o "$test_dir/system-tests"
 "$test_dir/system-tests"

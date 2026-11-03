@@ -81,7 +81,10 @@ final class AppModel: ObservableObject {
     var statusText: String {
         guard connected else { return installed ? "Connecting to the background service…" : "Ready to set up on this Mac" }
         guard state?.settings.enabled == true else { return "Daily schedule paused" }
-        if state?.pending != nil { return "Sleep countdown in progress" }
+        if let pending = state?.pending {
+            return pending.presented || pending.unattendedSince != nil
+                ? "Sleep countdown in progress" : "Waiting to show sleep warning"
+        }
         if let nextRun {
             return "Next sleep: " + nextRun.formatted(.dateTime.weekday(.wide).hour().minute())
         }

@@ -13,7 +13,7 @@ public final class ScheduleEngine {
     // Cumulative wall/monotonic elapsed-time difference for the current warning.
     // It is transient: restoring a persisted warning always consumes it safely.
     private var warningClockDrift: TimeInterval = 0
-    private let presentationGrace: TimeInterval = 10
+    private let maximumObservationGap: TimeInterval = 10
     private let freshness: TimeInterval = 4
     private let maximumLateness: TimeInterval = 90
 
@@ -53,6 +53,15 @@ public final class ScheduleEngine {
         lastTick = now
         lastUptime = uptime
 
+        // An unavailable warning may recover later, but never carry an old
+        // occurrence into the next daily warning. Fall through after expiry so
+        // the new date can create its own full countdown on this same tick.
+        if let pending = state.pending,
+           recoveryCutoff(for: pending).map({ now >= $0 }) ?? true {
+            finish(day: pending.day, now: now,
+                   message: "Skipped because the next daily warning is due.")
+        }
+
         if let pending = state.pending {
             if gap < 0 {
                 finish(day: pending.day, now: now,
@@ -71,7 +80,7 @@ public final class ScheduleEngine {
                     return false
                 }
             }
-            if (pending.presented || pending.unattendedSince != nil) && gap > presentationGrace {
+            if (pending.presented || pending.unattendedSince != nil) && gap > maximumObservationGap {
                 finish(day: pending.day, now: now,
                        message: "Skipped because the Mac or schedule service paused during the warning.")
                 return false
@@ -197,12 +206,11 @@ public final class ScheduleEngine {
         finish(day: day, now: now, message: message)
     }
 
-    /// Starts a new full interval only while the existing occurrence still has
-    /// presentation grace. No time from a visible or revoked interval carries over.
+    /// Starts a new full interval while the occurrence is pending. Waiting time
+    /// and time from a visible or revoked interval never count toward this interval.
     private func beginUnattended(now: Date, consoleUID: UInt32?, presence: AgentPresence?,
                                  uptime: TimeInterval?, systemPresence: SystemPresence?) -> Bool {
         guard var pending = state.pending,
-              now.timeIntervalSince(pending.awaitingSince) <= presentationGrace,
               let uptime, uptime.isFinite, uptime >= 0,
               systemPresence?.supportsUnattendedInterval(0) == true else { return false }
         pending.unattendedSince = now
@@ -231,7 +239,7 @@ public final class ScheduleEngine {
         }
 
         // Discard this interval completely. A returning user receives fresh
-        // presentation grace and a full visible warning. Later verified darkness
+        // presentation and a full visible warning. Later verified darkness
         // may begin another full unattended interval while this warning is pending.
         pending.unattendedSince = nil
         pending.presented = false
@@ -247,16 +255,6 @@ public final class ScheduleEngine {
     private func advanceWarning(now: Date, consoleUID: UInt32?, presence: AgentPresence?) -> Bool {
         guard var pending = state.pending else { return false }
         let agent = usablePresence(presence, consoleUID: consoleUID, now: now)
-
-        // Check grace before changing recipients: repeated user/session switches
-        // must not indefinitely extend an unseen warning's presentation budget.
-        if now.timeIntervalSince(pending.awaitingSince) > presentationGrace {
-            let reason = agent == nil
-                ? "Skipped because the active user did not have an available Nightfall app."
-                : "Skipped because the active user could not see the sleep warning."
-            finish(day: pending.day, now: now, message: reason)
-            return false
-        }
 
         // Both user changes and agent restarts require a new visible
         // acknowledgment before their full countdown can begin.
@@ -303,6 +301,15 @@ public final class ScheduleEngine {
         let age = now.timeIntervalSince(presence.lastSeen)
         guard age >= 0, age <= freshness else { return nil }
         return presence
+    }
+
+    /// Calendar arithmetic keeps the retry window aligned across midnight and
+    /// daylight-saving changes. Failure to find a boundary expires safely.
+    private func recoveryCutoff(for pending: PendingWarning) -> Date? {
+        let targetDay = calendar.startOfDay(for: pending.scheduledAt)
+        guard let nextDay = calendar.date(byAdding: .day, value: 1, to: targetDay),
+              let nextDue = scheduledTime(on: nextDay) else { return nil }
+        return nextDue.addingTimeInterval(-TimeInterval(pending.warningSeconds))
     }
 
     /// Consumes missed warning starts without catching up with a late countdown.

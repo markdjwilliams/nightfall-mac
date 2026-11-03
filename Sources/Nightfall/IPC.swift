@@ -10,7 +10,7 @@ enum NightfallPaths {
 }
 
 enum NightfallVersion {
-    static let current = "1.1.2"
+    static let current = "1.1.3"
 }
 
 /// One operation per connection. Identity comes from socket peer credentials.
@@ -34,6 +34,8 @@ struct ServiceResponse: Codable {
     var dryRun: Bool = false
     /// Independent service-side display/input evidence, absent when unavailable.
     var systemPresence: SystemPresence?
+    /// Explains unavailable evidence without exposing desktop or input contents.
+    var systemPresenceDiagnostic: String?
 }
 
 /// The same date representation is used for service messages and saved state.

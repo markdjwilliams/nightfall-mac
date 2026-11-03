@@ -134,9 +134,10 @@ struct WarningView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { context in
             let pending = model.warning
-            let remaining = max(0, Int(ceil((pending?.deadline ?? context.date).timeIntervalSince(context.date))))
             let isPreview = model.previewWarning != nil
             let waiting = pending?.presented == false
+            let remaining = waiting && !isPreview ? (pending?.warningSeconds ?? 0)
+                : max(0, Int(ceil((pending?.deadline ?? context.date).timeIntervalSince(context.date))))
             VStack(spacing: 0) {
                 HStack {
                     Label("NIGHTFALL", systemImage: "moon.stars.fill").font(.system(size: 10, weight: .bold)).tracking(2)
