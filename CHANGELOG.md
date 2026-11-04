@@ -6,7 +6,7 @@
 - Expire the delayed occurrence when the next daily warning is due, using calendar time across midnight and daylight-saving changes. Cancellation still consumes only its original occurrence.
 - Show waiting separately from a running countdown, including the full warning duration while presentation is pending.
 - Sample wall time and uptime together after system queries, so a slow console-user lookup cannot appear to be a clock adjustment.
-- Read display and input state through a protected helper in the active desktop’s context, intended to correct missing readings after a boot-started service. The root service uses a private pipe, bounded replies, and a fresh final check; unavailable or changing desktop evidence cannot approve sleep. Real boot-context verification remains required.
+- Read display and input state through a protected helper in the active desktop’s context, intended to correct missing readings after a boot-started service. The root service uses a private pipe, bounded replies, and a fresh final check; unavailable or changing desktop evidence cannot approve sleep. System-service and installed display-off/wake checks passed; the next cold boot and actual scheduled sleep still need verification.
 
 ## 1.1.2 beta 3 — October 29, 2026
 
